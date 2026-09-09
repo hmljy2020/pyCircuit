@@ -31,6 +31,12 @@ refine some of these; evidence and proposals remain separate.
 
 ## Contribution and merge order
 
+The current module-first delivery scope and synchronized rule NDF/code/test
+workflow are defined in [单模块开发工作流](davincioo-module-workflow.md).
+Document cross-module obligations during leaf development; full H2/H1
+integration validation is a separate milestone, not a prerequisite for scoped
+module-level gfsim acceptance.
+
 1. Claim a module ID and source/test ownership in the design tracking issue.
 2. Resolve its disposition, typed ports, identity, state, reset, cancellation
    and parent-owned seams. Proposed interfaces require review before promotion.

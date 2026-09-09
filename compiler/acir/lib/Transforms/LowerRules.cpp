@@ -1,3 +1,4 @@
+#include "acir/Analysis/PredicateImplication.h"
 #include "acir/Transforms/Passes.h"
 
 #include "acir/Analysis/VariableAnalysis.h"
@@ -62,7 +63,7 @@ ac::RuleGuardKind guardKind(Value value) {
 }
 
 bool presenceImpliesCandidate(Value present, Value candidate) {
-  return present == candidate || constantBool(candidate) == true;
+  return acir::provesPredicateImplication(present, candidate);
 }
 
 ac::RuleGuardKind inferredGuardKind(Operation *scope) {
@@ -1085,9 +1086,11 @@ void addRuleLoweringPipeline(mlir::OpPassManager &manager) {
   manager.addPass(createVerifyValueConstraintsPass());
   manager.addPass(std::make_unique<InferRuleTypesPass>());
   // Rule summaries are derived evidence.  Eliminate dead state reads before
-  // effect inference so footprints and typed summaries describe the live IR
-  // that later canonicalization preserves.
+  // effect inference so footprints and typed summaries describe the live IR.
+  // CSE must also precede these per-operation summaries: two live identical
+  // reads survive DCE but later CSE would invalidate the footprint count.
   manager.addPass(createCanonicalizerPass());
+  manager.addPass(createCSEPass());
   manager.addPass(std::make_unique<InferRuleEffectsPass>());
   manager.addPass(std::make_unique<InferRuleActivationPass>());
   manager.addPass(std::make_unique<MaterializeRuleChecksPass>());

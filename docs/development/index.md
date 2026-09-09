@@ -24,6 +24,8 @@ matrix and keep the separate frontend and IR boundaries defined by Decision
 - [Review and merge](review-and-merge.md)
 - [Repository management](repository-management.md)
 - [DavinciOO contributor design program](davincioo-design-program.md)
+- [DavinciOO 单模块开发工作流](davincioo-module-workflow.md)
+- [框架问题审阅目录](../framework-issues/README.md)
 
 ## Build and gate commands
 

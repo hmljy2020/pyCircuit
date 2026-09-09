@@ -79,3 +79,14 @@ gfsim execution is the first implementation gate. PYC/RTL obligations apply to t
 - `docs/specification/davincioo/ndf-next/modules/spe/ooo/mpq.md:35` — Typed Queue/state contract for existing source draft.
 
 Source paths use the frozen external repository spelling, including legacy `l3/` directories; they are provenance, not the new hierarchy vocabulary. File hashes and the original catalog disposition are in [catalog.json](../../catalog.json). See [architecture](../../ARCHITECTURE.md) for unresolved global decisions.
+
+## CMT seam confirmed 2026-09-09
+
+MPQ owns the REN-produced rename-history ledger. For each accepted CMT RobEvent,
+it must find the complete matching EpochKey/InstKey/BlockKey/RobKey history set,
+retain handoff responsibility, and return one valid, accepted, non-stale
+MpqHandoffAck per distinct history_sequence with a valid durable history and
+an unchanged request. CMT checks identity and distinct count, not a separately
+supplied expected-ID set. Zero requested histories require no history ack.
+This confirmation does not itself reclaim a physical register or publish an
+architectural mapping. Recovery preserves accepted irreversible handoffs.

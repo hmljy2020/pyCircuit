@@ -254,6 +254,7 @@ class RuleLocalDefinition:
     guard: ast.expr | None = None
     guard_negated: bool = False
     prior_name: str | None = None
+    type_argument: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +296,7 @@ class RuleLocalBinding:
     guard: ast.expr | None = None
     guard_negated: bool = False
     prior_name: str | None = None
+    type_argument: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1693,6 +1695,7 @@ def _desugar_nested_rule_captures(
                 )
         lowered = copy.deepcopy(nested)
         lowered._ac_source_name = name
+        lowered._ac_captured_state = captures
         lowered.name = qualified_names[name]
         lowered.body = [
             statement
@@ -1779,6 +1782,102 @@ def _desugar_nested_rule_captures(
     ]
     tree.body.extend(transformed)
     return ast.fix_missing_locations(tree)
+
+
+def _normalize_rule_field_assignments(node: ast.FunctionDef) -> ast.FunctionDef:
+    """Field stores are value updates, never Python object mutation."""
+    used = {item.id for item in ast.walk(node) if isinstance(item, ast.Name)}
+    used.update(argument.arg for argument in node.args.args)
+
+    class Normalize(ast.NodeTransformer):
+        def visit_AugAssign(self, statement: ast.AugAssign) -> ast.AST:
+            if isinstance(statement.target, ast.Attribute):
+                raise QueueFrontendError(
+                    "ACPY-RULE-016: augmented field assignment is unsupported"
+                )
+            return statement
+
+        def visit_Assign(self, statement: ast.Assign) -> ast.AST | list[ast.stmt]:
+            if not any(isinstance(target, ast.Attribute) for target in statement.targets):
+                return statement
+            if len(statement.targets) != 1:
+                raise QueueFrontendError(
+                    "ACPY-RULE-016: field assignment requires one target"
+                )
+            field = statement.targets[0]
+            assert isinstance(field, ast.Attribute)
+            target = copy.deepcopy(field.value)
+            indexed = (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and not isinstance(target.slice, (ast.Slice, ast.Tuple))
+            )
+            if not isinstance(target, ast.Name) and not indexed:
+                raise QueueFrontendError(
+                    "ACPY-RULE-016: field assignment requires a record name "
+                    "or a persistent list element; nested field targets are unsupported"
+                )
+            prefix: list[ast.stmt] = []
+            if indexed and not isinstance(target.slice, (ast.Name, ast.Constant)):
+                name = "__ac_field_index"
+                while name in used:
+                    name += "_"
+                used.add(name)
+                prefix.append(ast.copy_location(ast.Assign(
+                    targets=[ast.Name(id=name, ctx=ast.Store())],
+                    value=copy.deepcopy(target.slice),
+                ), statement))
+                target.slice = ast.Name(id=name, ctx=ast.Load())
+            value = copy.deepcopy(target)
+            value.ctx = ast.Load()
+            target.ctx = ast.Store()
+            updated = ast.copy_location(ast.Assign(
+                targets=[target],
+                value=ast.Call(
+                    func=ast.Attribute(value=value, attr="with_fields", ctx=ast.Load()),
+                    args=[],
+                    keywords=[ast.keyword(arg=field.attr, value=statement.value)],
+                ),
+            ), statement)
+            return [*prefix, updated]
+
+    result = Normalize().visit(copy.deepcopy(node))
+    assert isinstance(result, ast.FunctionDef)
+    return ast.fix_missing_locations(result)
+
+
+def _forward_list_read(
+    candidate: ast.Subscript, writes: list[RuleStateWriteDefinition]
+) -> ast.expr:
+    """Read source-ordered proposals without changing committed storage."""
+    if not isinstance(candidate.value, ast.Name):
+        return candidate
+    result: ast.expr = candidate
+    for write in writes:
+        if write.argument != candidate.value.id or write.index is None:
+            continue
+        same = ast.dump(candidate.slice) == ast.dump(write.index)
+        if (
+            not same
+            and isinstance(candidate.slice, ast.Constant)
+            and isinstance(write.index, ast.Constant)
+        ):
+            continue
+        condition: ast.expr | None = None if same else ast.Compare(
+            left=copy.deepcopy(candidate.slice), ops=[ast.Eq()],
+            comparators=[copy.deepcopy(write.index)],
+        )
+        if write.guard is not None:
+            guard = copy.deepcopy(write.guard)
+            if write.guard_negated:
+                guard = ast.UnaryOp(op=ast.Not(), operand=guard)
+            condition = guard if condition is None else ast.BoolOp(
+                op=ast.And(), values=[condition, guard]
+            )
+        result = copy.deepcopy(write.value) if condition is None else ast.IfExp(
+            test=condition, body=copy.deepcopy(write.value), orelse=result
+        )
+    return ast.copy_location(result, candidate)
 
 
 def parse_queue_program(
@@ -1936,6 +2035,8 @@ def parse_queue_program(
             )
         parameter = payload_parameters[-1]
         versions: dict[str, str] = {}
+        reserved_names = {item.id for item in ast.walk(node) if isinstance(item, ast.Name)}
+        reserved_names.update(parameter_names)
         locals_: list[RuleLocalDefinition] = []
         state_writes: list[RuleStateWriteDefinition] = []
         scalar_state_presence: dict[str, ast.expr] = {}
@@ -1948,6 +2049,10 @@ def parse_queue_program(
         next_condition = 0
 
         class RewriteLoads(ast.NodeTransformer):
+            def visit_Subscript(self, candidate: ast.Subscript) -> ast.expr:
+                candidate = self.generic_visit(candidate)
+                return _forward_list_read(candidate, state_writes)
+
             def visit_Name(self, candidate: ast.Name) -> ast.expr:
                 if isinstance(candidate.ctx, ast.Load) and candidate.id in versions:
                     return ast.copy_location(
@@ -1997,11 +2102,20 @@ def parse_queue_program(
                     raise QueueFrontendError(
                         "ACPY-RULE-014: persistent state cannot be assigned None"
                     )
+                value = rewrite(statement.value)
+                version = f"__ac_list_write_{len(state_writes)}"
+                while version in reserved_names:
+                    version += "_"
+                reserved_names.add(version)
+                locals_.append(RuleLocalDefinition(
+                    version, value, copy.deepcopy(guard), False,
+                    type_argument=target.value.id,
+                ))
                 state_writes.append(
                     RuleStateWriteDefinition(
                         target.value.id,
                         rewrite(target.slice),
-                        rewrite(statement.value),
+                        ast.Name(id=version, ctx=ast.Load()),
                         copy.deepcopy(guard),
                         False,
                     )
@@ -2215,6 +2329,7 @@ def parse_queue_program(
             raise QueueFrontendError(
                 "ACPY-RULE-001: rules require one or more positional parameters"
             )
+        node = _normalize_rule_field_assignments(node)
         multi_output = parse_optional_multi_output_rule(node)
         if multi_output is not None:
             rule_definitions[node.name] = multi_output
@@ -2478,10 +2593,18 @@ def parse_queue_program(
         partial_local_versions: set[str] = set()
         partial_local_guards: dict[str, tuple[ast.expr, bool]] = {}
         next_local_version = 0
+        reserved_names = {item.id for item in ast.walk(node) if isinstance(item, ast.Name)}
+        reserved_names.update(parameter_names)
 
         class RewriteLocalLoads(ast.NodeTransformer):
             def __init__(self, excluded: frozenset[str] = frozenset()) -> None:
                 self.excluded = excluded
+
+            def visit_Subscript(self, candidate: ast.Subscript) -> ast.expr:
+                candidate = self.generic_visit(candidate)
+                if isinstance(candidate.value, ast.Name) and candidate.value.id not in self.excluded:
+                    return _forward_list_read(candidate, state_writes)
+                return candidate
 
             def visit_Name(self, candidate: ast.Name) -> ast.expr:
                 if (
@@ -2655,11 +2778,19 @@ def parse_queue_program(
                 rewritten_guard = rewrite_local_loads(branch_guard)
                 assert rewritten_index is not None
                 assert rewritten_value is not None
+                version = f"__ac_list_write_{len(state_writes)}"
+                while version in reserved_names:
+                    version += "_"
+                reserved_names.add(version)
+                rule_locals.append(RuleLocalDefinition(
+                    version, rewritten_value, rewritten_guard, branch_negated,
+                    type_argument=target.value.id,
+                ))
                 state_writes.append(
                     RuleStateWriteDefinition(
                         target.value.id,
                         rewritten_index,
-                        rewritten_value,
+                        ast.Name(id=version, ctx=ast.Load()),
                         rewritten_guard,
                         branch_negated,
                     )
@@ -2708,6 +2839,11 @@ def parse_queue_program(
                     and branch_guard is None
                     and isinstance(statement.value, ast.Subscript)
                     and not any(
+                        isinstance(statement.value.value, ast.Name)
+                        and write.argument == statement.value.value.id
+                        for write in state_writes
+                    )
+                    and not any(
                         isinstance(candidate, ast.Name)
                         and candidate.id in local_names
                         for candidate in ast.walk(statement.value.slice)
@@ -2754,6 +2890,7 @@ def parse_queue_program(
             and candidate.value.id in parameter_names
         }
         state_names.update(state_reference_arguments)
+        state_names.update(getattr(node, "_ac_captured_state", ()))
         rewritten_multi_return = rewrite_local_loads(multi_return)
         # A blocking/effect/output guard selects whether the transaction may
         # begin.  State parameters in that predicate therefore denote the
@@ -2811,12 +2948,14 @@ def parse_queue_program(
                 raise QueueFrontendError(
                     "ACPY-RULE-011: branch-local value escapes its defining path"
                 )
-        if rewritten_multi_guard is not None and any(
-            write.guard is not None for write in state_writes
+        if (
+            rewritten_multi_guard is not None
+            and rewritten_multi_return is not None
+            and any(write.guard is not None for write in state_writes)
         ):
             raise QueueFrontendError(
                 "ACPY-RULE-011: nested conditional state effects inside a "
-                "blocking guard require explicit CFG implication proof"
+                "blocking guard currently require an outputless rule"
             )
         for find in rule_finds:
             for expression in (find.predicate, find.key):
@@ -2839,6 +2978,7 @@ def parse_queue_program(
                 state_writes
                 or state_reads
                 or rule_finds
+                or (rule_locals and multi_return is not None)
                 or (
                     multi_return is not None
                     and multi_output_guard is not None
@@ -2854,6 +2994,14 @@ def parse_queue_program(
                 or rewritten_multi_output_guard is not None
                 or (bool(state_reads) and not state_writes)
                 or (bool(state_writes) and multi_return is None)
+                or (
+                    bool(rule_locals)
+                    and multi_return is not None
+                    and (
+                        len(state_writes) != 1
+                        or len(rule_locals) > len(state_writes)
+                    )
+                )
             )
         ):
             if parameter_names[: len(ordered_state)] != ordered_state:
@@ -6372,6 +6520,7 @@ def parse_queue_program(
                             copy.deepcopy(local.guard),
                             local.guard_negated,
                             local.prior_name,
+                            local.type_argument,
                         )
                         for local in definition.locals
                     )
@@ -6468,6 +6617,7 @@ def parse_queue_program(
                                 copy.deepcopy(local.guard),
                                 local.guard_negated,
                                 local.prior_name,
+                                local.type_argument,
                             )
                             for local in definition.locals
                         )
@@ -7174,6 +7324,7 @@ def parse_queue_program(
                                     copy.deepcopy(local.guard),
                                     local.guard_negated,
                                     local.prior_name,
+                                    local.type_argument,
                                 )
                                 for local in definition.locals
                             ),
@@ -9046,6 +9197,17 @@ def lower_queue_program(
             rule_input_names = queue.rule_input_names
             rule_arguments = queue.rule_arguments
             rule_payloads = queue.rule_payloads
+            # Count bound Queue inputs, not source parameters: static arguments
+            # have been specialized away and persistent owners resolved here.
+            if (
+                queue.rule_guard is not None
+                and any(write.guard is not None for write in queue.rule_state_writes)
+                and len(rule_input_names) != 1
+            ):
+                raise QueueFrontendError(
+                    "ACPY-RULE-011: nested conditional state effects inside a "
+                    "blocking guard require exactly one Queue input"
+                )
             selected_input_names = tuple(
                 effective_input.get((queue.name, index), name)
                 for index, name in enumerate(rule_input_names)
@@ -9317,7 +9479,7 @@ def lower_queue_program(
                         )
                     except ValueError:
                         pass
-                if type(local_static) in {bool, int}:
+                if type(local_static) in {bool, int} and local.type_argument is None:
                     emitter.root_values.pop(local.name, None)
                     emitter.deferred_values[local.name] = ast.Constant(
                         value=local_static
@@ -9328,9 +9490,13 @@ def lower_queue_program(
                     if local.prior_name is None
                     else emitter.root_values.get(local.prior_name)
                 )
-                local_value, local_type = emitter.emit(
-                    local.value, None if previous is None else previous[1]
-                )
+                expected_local_type = None if previous is None else previous[1]
+                if local.type_argument is not None:
+                    expected_local_type = next(
+                        owner.value_type for owner in queue.rule_state_owners
+                        if owner.argument == local.type_argument
+                    )
+                local_value, local_type = emitter.emit(local.value, expected_local_type)
                 if previous is not None:
                     _, previous_type = previous
                     if not _types_equal_in_epoch_05(local_type, previous_type):
@@ -9436,9 +9602,11 @@ def lower_queue_program(
                 emitter.lines.append(
                     f"    %{condition_result} = ac.var.constant true as !ac.var<i1>"
                 )
-            elif output_guard_result is not None or any(
-                write.guard is not None for write in queue.rule_state_writes
-            ) or multi_output_guard_results:
+            elif condition_result is None and (
+                output_guard_result is not None
+                or any(write.guard is not None for write in queue.rule_state_writes)
+                or multi_output_guard_results
+            ):
                 condition_result = emitter._new()
                 emitter.lines.append(
                     f"    %{condition_result} = ac.var.constant true as !ac.var<i1>"
@@ -9590,6 +9758,18 @@ def lower_queue_program(
             writes_by_variable: dict[
                 tuple[str, str], list[RuleStateWriteBinding]
             ] = {}
+            index_aliases = {
+                local.name: local.value
+                for local in queue.rule_locals
+                if local.guard is None
+            }
+
+            class ResolveIndexAliases(ast.NodeTransformer):
+                def visit_Name(self, node: ast.Name) -> ast.expr:
+                    if node.id in index_aliases:
+                        return self.visit(copy.deepcopy(index_aliases[node.id]))
+                    return node
+
             for variable, owner_writes in writes_by_owner.items():
                 complementary_pair = (
                     len(owner_writes) == 2
@@ -9607,7 +9787,8 @@ def lower_queue_program(
                         "<scalar>"
                         if state_write.index is None
                         else ast.dump(
-                            state_write.index, include_attributes=False
+                            ResolveIndexAliases().visit(copy.deepcopy(state_write.index)),
+                            include_attributes=False,
                         )
                     )
                     writes_by_variable.setdefault(
@@ -9672,15 +9853,12 @@ def lower_queue_program(
                     )
                     continue
                 if len(owner_writes) > 1:
-                    if any(write.guard is None for write in owner_writes):
-                        raise QueueFrontendError(
-                            "ACPY-RULE-011: repeated same-owner proposals require "
-                            "path predicates"
-                        )
                     rendered = [
                         (
                             write,
-                            emit_state_guard(write),
+                            emit_state_guard(write)
+                            if write.guard is not None
+                            else emitter.emit(ast.Constant(value=True), BoolType())[0],
                             *emit_state_index(write),
                             emit_state_value(write),
                         )
@@ -9744,7 +9922,9 @@ def lower_queue_program(
                             selected_index,
                             selected_index_type,
                             selected_value,
-                            combined_guard,
+                            combined_guard
+                            if all(write.guard is not None for write in owner_writes)
+                            else None,
                         )
                     )
                     continue
@@ -9766,6 +9946,24 @@ def lower_queue_program(
                         state_value,
                         state_write.value_type,
                     )
+            # Keep the blocking candidate separate from the branch-local
+            # selector. Qualify after same-owner joins, so alternatives still
+            # produce one selected proposal with its original source ordering.
+            if guard_result is not None:
+                qualified_results = []
+                qualified_guards: dict[str, str] = {}
+                for write, index, index_type, value, presence in multi_state_results:
+                    if presence is not None:
+                        if presence not in qualified_guards:
+                            qualified = emitter._new()
+                            emitter.lines.append(
+                                f"    %{qualified} = ac.var.and %{guard_result}, "
+                                f"%{presence} : !ac.var<i1>"
+                            )
+                            qualified_guards[presence] = qualified
+                        presence = qualified_guards[presence]
+                    qualified_results.append((write, index, index_type, value, presence))
+                multi_state_results = qualified_results
             result: str | None = None
             multi_output_results: list[str] = []
             if queue.rule_has_output:
@@ -9844,6 +10042,11 @@ def lower_queue_program(
                     f" when %{condition_result} : !ac.var<i1>"
                     if output_guard_result is not None
                     or multi_output_guard_results
+                    or any(result[-1] is not None for result in multi_state_results)
+                    or (
+                        queue.rule_has_output
+                        and any(write.guard is not None for write in queue.rule_state_writes)
+                    )
                     else ""
                 )
             )

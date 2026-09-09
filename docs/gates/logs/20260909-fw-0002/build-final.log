@@ -1,0 +1,12 @@
+[1/12] Building CXX object compiler/acir/lib/Transforms/CMakeFiles/ACIRTransforms.dir/LowerRules.cpp.o
+[2/12] Building CXX object compiler/acir/tests/cpp/CodeGen/CMakeFiles/CodeGenTests.dir/QueueGraphPlanTest.cpp.o
+[3/12] Building CXX object compiler/acir/lib/CodeGen/CMakeFiles/ACIRCodeGen.dir/QueueGraphPlan.cpp.o
+[4/12] Building CXX object compiler/acir/lib/Dialect/ACIR/CMakeFiles/ACIRDialect.dir/ACIROps.cpp.o
+[5/12] Linking CXX static library compiler/acir/lib/Dialect/ACIR/libACIRDialect.a
+[6/12] Linking CXX static library compiler/acir/lib/Transforms/libACIRTransforms.a
+[7/12] Linking CXX static library compiler/acir/lib/CodeGen/libACIRCodeGen.a
+[8/12] Linking CXX executable bin/acir-queue-cxxgen
+[9/12] Linking CXX executable bin/acir-queue-plan
+[10/12] Linking CXX executable bin/acir-opt
+[11/12] Linking CXX executable bin/acir-opt-internal
+[12/12] Linking CXX executable bin/CodeGenTests

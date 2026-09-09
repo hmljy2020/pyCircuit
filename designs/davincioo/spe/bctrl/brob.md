@@ -78,3 +78,13 @@ gfsim execution is the first implementation gate. PYC/RTL obligations apply to t
 - `docs/architecture/core/l3/SPE_EXECUTION_PACKETS.md:591` — Detailed proposed module card or disposition evidence.
 
 Source paths use the frozen external repository spelling, including legacy `l3/` directories; they are provenance, not the new hierarchy vocabulary. File hashes and the original catalog disposition are in [catalog.json](../../catalog.json). See [architecture](../../ARCHITECTURE.md) for unresolved global decisions.
+
+## CMT seam confirmed 2026-09-09
+
+CMT sends the complete retained RobEvent independently of MPQ progress.
+BROB must durably retain that transaction before returning a valid durable
+BrobHandoffAck with matching EpochKey, InstKey, BlockKey and RobKey.
+Recovery must preserve this already handed-off responsibility. This ack is
+handoff acceptance, not proof of architectural publication. The existing
+proposed HandoffReq boundary must be reconciled with this typed seam before
+BROB implementation; the local CMT testbench models this promise only.

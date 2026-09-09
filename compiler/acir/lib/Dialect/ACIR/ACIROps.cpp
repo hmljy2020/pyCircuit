@@ -1,3 +1,4 @@
+#include "acir/Analysis/PredicateImplication.h"
 #include "acir/Dialect/ACIR/ACIROps.h"
 #include "ACIROpsTestHooks.h"
 #include "ProcessLowerability.h"
@@ -70,7 +71,7 @@ static RuleGuardKind guardKindFor(Value value) {
 }
 
 static bool presenceImpliesCandidate(Value present, Value candidate) {
-  return present == candidate || constantVarBool(candidate) == true;
+  return acir::provesPredicateImplication(present, candidate);
 }
 
 static LogicalResult verifyActivationEvidence(Operation *operation,

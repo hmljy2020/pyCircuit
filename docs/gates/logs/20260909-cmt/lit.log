@@ -1,0 +1,11 @@
+-- Testing: 4 of 194 tests, 4 workers --
+PASS: AgenticCircuit :: ACIR/firing-footprint-invalid.mlir (1 of 4)
+PASS: AgenticCircuit :: Transforms/rule-cse-footprints.mlir (2 of 4)
+PASS: AgenticCircuit :: Transforms/rule-multi-state-lowering.mlir (3 of 4)
+PASS: AgenticCircuit :: Transforms/rule-snapshot-set-lowering.mlir (4 of 4)
+
+Testing Time: 3.36s
+
+Total Discovered Tests: 194
+  Excluded: 190 (97.94%)
+  Passed  :   4 (2.06%)

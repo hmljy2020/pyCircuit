@@ -1,0 +1,15 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.16, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/lc/pyCircuit
+configfile: pyproject.toml
+plugins: xdist-3.8.0, cov-7.1.0
+collected 155 items
+
+tests/python/agentic-circuit/python_frontend/test_blocking_branch.py ... [  1%]
+.....                                                                    [  5%]
+tests/python/agentic-circuit/python_frontend/test_queue_frontend.py .... [  7%]
+........................................................................ [ 54%]
+......................................................................   [ 99%]
+tests/integration/agentic-circuit/e2e/test_blocking_branch.py .          [100%]
+
+============================= 155 passed in 5.74s ==============================

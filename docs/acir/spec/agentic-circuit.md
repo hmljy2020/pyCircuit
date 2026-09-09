@@ -132,6 +132,30 @@ The frontend and backends MAY copy or move an immutable token internally, but
 they MUST NOT expose mutable aliases that change a token already stored in a
 Queue.
 
+Inside `@ac.rule`, `local.field = value` is shorthand for
+`local = local.with_fields(field=value)`. The local must already denote a
+record value; assignment creates its next SSA value. Copies remain independent:
+after `local = entries[i]`, changing `local.field` does not write the list.
+Use `entries[i] = local` for explicit writeback. Queue input parameters cannot
+be field-assignment targets; first bind the input value to a local.
+
+For captured persistent records, `state.field = value` proposes the updated
+record. `entries[i].field = value` similarly updates one persistent list entry.
+Both retain other fields and commit atomically with the rule, without an added
+cycle. Existing state declarations and `nonlocal` capture requirements apply.
+Sequential assignments and subsequent indexed reads observe preceding proposals
+in source order; previously bound local snapshots stay unchanged. A captured
+index is evaluated once at its assignment position. Writes to the same resolved
+index are joined, while different indices still require the existing disjointness
+or mutually exclusive presence proof.
+
+This syntax supports one named field on a record name or persistent list
+element. Nested field targets, slice targets, augmented field assignment and
+multiple assignment targets are unsupported. Unknown fields, incompatible types
+and unsafe indices remain errors. `with_fields` remains available as a pure
+expression. The frontend lowers both forms through the same `ac.var.with` and
+state proposal operations; it adds no backend-specific mutation semantics.
+
 ### Opcodes are common building blocks
 
 The public `ac.*` inventory is closed and repository-owned. Users compose
@@ -951,6 +975,16 @@ disjoint index domains or structurally mutually exclusive predicates. Each
 authored index retains the existing exact-width/full-domain safety proof. A
 branch value that depends on another branch-written owner remains rejected
 until general state joins are available.
+
+The same outputless, one-input branch form may sit inside a blocking trailing
+`if`. Its condition is captured before the body executes and remains the
+transaction candidate. Every selected state proposal is qualified by the
+conjunction of that candidate and its branch predicate; a false candidate
+consumes no input and publishes no state. Rule/Firing and frozen QueueGraph
+independently prove presence implies candidate using typed Boolean identities,
+constants and conjunctions. Unknown implications fail closed. This extension
+does not admit selected outputs or early-return chains inside the blocking
+branch, and does not introduce lazy or unchecked indexed reads (Decision 0221).
 
 One stateful output may be optional. A trailing Python
 `if condition: return value` followed by `return` means the input and preceding

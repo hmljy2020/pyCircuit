@@ -730,6 +730,7 @@
       "status": "normative",
       "symbol": "PYC_MulOp",
       "tests": [
+        "tests/cpp/agentic-circuit/CodeGen/QueueGraphPlanTest.cpp",
         "tests/unit/test_semantic_core.py"
       ],
       "verifier": "compiler/mlir/lib/Dialect/PYC/PYCOps.cpp",

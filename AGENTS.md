@@ -89,3 +89,30 @@ of truth.
 - Keep generated logs bounded and archive only reviewable evidence.
 - Update behavior documentation in the same change as the behavior.
 - Report non-critical local validation gaps explicitly instead of hiding them.
+
+## Development rules
+
+### DEV-001: Record framework issues for upstream reporting
+
+- During implementation, record framework defects and expression/tooling
+  limitations in the dedicated `docs/framework-issues/` directory. Use one
+  concise Markdown file per issue, named `FW-NNNN-short-title.md`, and maintain
+  `README.md` as the user's review index with title, status and review state.
+  New records start as "pending user review"; do not mark them reviewed without
+  the user's confirmation. Keep records suitable for filing against
+  `PTO-ISA/pyCircuit`; link gate evidence instead of pasting large logs.
+- Each entry must include: a short title, observed versus expected behavior,
+  implementation impact, a minimal reproducer or reproduction command and
+  evidence path, and the current status. Distinguish confirmed framework bugs,
+  documented limitations, and suspected environment/tooling problems.
+- Record the affected framework release/tag when available, the full commit
+  SHA, branch, and relevant uncommitted changes. If no release version exists,
+  use the commit SHA; never identify a version only as "latest" or "pyCircuit 6".
+  If the tools were built from a different revision, record that revision too.
+- When resolved, update the same entry with a brief cause, solution, regression
+  result, and fix commit SHA. For an uncommitted fix, explicitly write
+  "fixed locally, uncommitted" and link the patch/files; add the SHA after commit.
+  A workaround does not count as resolving the underlying framework issue.
+- Track local resolution and upstream status separately; add issue/PR links
+  and the upstream fix revision when available. Preparing these records does
+  not authorize posting an issue or other external message.

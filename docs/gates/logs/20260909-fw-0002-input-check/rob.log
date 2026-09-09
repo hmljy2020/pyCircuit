@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.16, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/lc/pyCircuit
+configfile: pyproject.toml
+plugins: xdist-3.8.0, cov-7.1.0
+collected 9 items
+
+designs/davincioo/tests/spe/ooo/test_rob.py .....                        [ 55%]
+designs/davincioo/tests/spe/ooo/test_rob_single.py ....                  [100%]
+
+========================= 9 passed in 75.46s (0:01:15) =========================

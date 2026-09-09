@@ -1,3 +1,4 @@
+#include "acir/Analysis/PredicateImplication.h"
 #include "acir/CodeGen/QueueGraphPlan.h"
 
 #include "acir/Analysis/ModelAnalysis.h"
@@ -3517,12 +3518,41 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
                    expression.kind == "constant" &&
                    expression.literal == "true";
           });
+      llvm::StringMap<const QueueExpressionPlan *> presenceExpressions;
+      for (const auto &expression : block.expressions)
+        presenceExpressions[expression.result] = &expression;
       auto verifyEffectPresence = [&](llvm::StringRef present) {
         if (identities.lookup(present) != "i1")
           return false;
         if (present == block.guard)
           return true;
-        return candidateAlways && block.inputs.size() == 1;
+        if (block.inputs.size() != 1)
+          return false;
+        return provesPredicateImplication<llvm::StringRef>(
+            present, block.guard,
+            [&](llvm::StringRef value) {
+              return identities.lookup(value) == "i1";
+            },
+            [&](llvm::StringRef value) -> std::optional<bool> {
+              const auto *expression = presenceExpressions.lookup(value);
+              if (!expression || expression->kind != "constant")
+                return std::nullopt;
+              if (expression->literal == "true")
+                return true;
+              if (expression->literal == "false")
+                return false;
+              return std::nullopt;
+            },
+            [&](llvm::StringRef value) {
+              llvm::SmallVector<llvm::StringRef, 2> operands;
+              const auto *expression = presenceExpressions.lookup(value);
+              if (expression &&
+                  (expression->kind == "and" || expression->kind == "mul") &&
+                  expression->operands.size() == 2)
+                for (const auto &operand : expression->operands)
+                  operands.push_back(operand);
+              return operands;
+            });
       };
       for (const StateWritePlan &write : block.stateWrites) {
         const TablePlan *table = tables.lookup(write.table);
@@ -3690,7 +3720,8 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
           }
       }
       for (const OutputPresencePlan &output : block.outputPresence)
-        if (!verifyEffectPresence(output.present))
+        if (!verifyEffectPresence(output.present) ||
+            (output.present != block.guard && !candidateAlways))
           return planError(
               "state firing output presence must imply its candidate");
       for (const StateReservationPlan &reservation : block.stateReservations) {

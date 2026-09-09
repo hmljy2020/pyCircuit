@@ -1,0 +1,23 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.16, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/lc/pyCircuit
+configfile: pyproject.toml
+plugins: xdist-3.8.0, cov-7.1.0
+collected 9 items
+
+designs/davincioo/tests/spe/ooo/test_cmt.py ........F                    [100%]
+
+=================================== FAILURES ===================================
+______________ test_cmt_static_history_loop_matches_expanded_acir ______________
+designs/davincioo/tests/spe/ooo/test_cmt.py:142: in test_cmt_static_history_loop_matches_expanded_acir
+    loop_acir = lower_queue_source(loop_source, "dual_cmt_system", host_results=True)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   assert 'builtin.modu...c>>\n  }\n}\n' == 'builtin.modu...c>>\n  }\n}\n'
+E
+E     Skipping 169228 identical leading characters in diff, use -v to show
+E     Skipping 2948 identical trailing characters in diff, use -v to show
+E     - = "sha256:24680ca1de022f555f6dcfc0f9d1f6e10f1ef5950035af271079fe806e5d8b3e"} graph
+E     + = "sha256:5df38c7dffd445137d41e1491a880b8c1c6425a9459fec2e389e457b09880421"} graph
+=========================== short test summary info ============================
+FAILED designs/davincioo/tests/spe/ooo/test_cmt.py::test_cmt_static_history_loop_matches_expanded_acir
+=================== 1 failed, 8 passed in 110.95s (0:01:50) ====================

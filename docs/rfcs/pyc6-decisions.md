@@ -7417,7 +7417,37 @@ dynamic indices wider than the original 64-entry snapshot mask.
   body still observe the preceding assignments; the candidate must not be
   recomputed from their proposed values.
 
+- The outputless one-input nested state branch may be enclosed by one blocking
+  trailing `if` (FW-0002). Its captured condition remains the candidate;
+  branch proposal presence is candidate AND path, applied after owner joins.
+  Rule/Firing and QueueGraph independently use the same conservative Boolean
+  implication algorithm over live SSA and frozen expressions: identity,
+  constants and conjunction inclusion, with visited-node tracking for DAGs.
+  Unproved predicates fail closed. This supersedes Decision 0207's initial
+  blocking/branch exclusion for this slice only; early-return combinations,
+  selected outputs, multi-input branches and lazy reads remain outside it.
+
+- FW-0005 admits `local.field = value`, captured `state.field = value`, and
+  `entries[index].field = value` as value-update/assignment shorthand for
+  `with_fields`. Local copies remain independent; state changes commit only
+  with the rule. Queue inputs remain immutable. Single-field targets retain
+  existing type, capture, bounds and disjoint-write checks; nested targets,
+  slices and augmented assignments remain outside this slice.
+  Source-ordered list proposal SSA preserves preceding updates and captured
+  indices without recursively expanding prior expressions. Equivalent index
+  aliases and repeated writes join before native verification. Mixed selected
+  and unconditional effects retain explicit candidate evidence where needed.
+
 **Verification**
+- FW-0002 has a standalone public-Python reproducer, Rule/Firing/QueueGraph
+  negative tests, nested indexed-write coverage and a generated gfsim
+  expected-result/scan-activation test. CMT uses direct conditional state
+  updates with its NDF updated alongside. Evidence:
+  `docs/gates/logs/20260909-fw-0002/summary.md`.
+
+- FW-0005: Generic gfsim equivalence/backpressure and CMT/ROB regression evidence:
+  `docs/gates/logs/20260909-fw-0005/summary.md`.
+
 - A framework-owned three-file fixture uses imported Enum/struct contracts,
   two runtime payload inputs, two heterogeneous outputs, one keyword-only const,
   a 128-entry recursive-struct state owner, one read-only firing, and one
@@ -7445,6 +7475,11 @@ dynamic indices wider than the original 64-entry snapshot mask.
   `docs/gates/logs/20260907-circular-rob-fix/`; the ROB equivalence counters remain
   1769/182 Work calls, 215 activation and 511 closure traversals. That run also
   records two independently reproduced pre-existing non-ROB Queue test failures.
+- The CMT follow-up runs CSE before effect inference as well as eliminating
+  dead reads. Duplicate live Table reads must be merged before deriving
+  per-operation footprints, otherwise later CSE invalidates the verified
+  summaries. The design-neutral `rule-cse-footprints.mlir` regression retains
+  verification after every pass; evidence is in `docs/gates/logs/20260909-cmt/`.
 
 **Source**
 - PTO-ISA/pyCircuit issue #44.

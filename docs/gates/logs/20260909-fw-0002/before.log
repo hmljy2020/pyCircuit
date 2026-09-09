@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "<stdin>", line 4, in <module>
+  File "/home/lc/pyCircuit/python/agentic-circuit/src/agentic_circuit/_queue_frontend.py", line 12265, in lower_queue_source
+    parse_queue_program(
+  File "/home/lc/pyCircuit/python/agentic-circuit/src/agentic_circuit/_queue_frontend.py", line 2817, in parse_queue_program
+    raise QueueFrontendError(
+agentic_circuit._queue_frontend.QueueFrontendError: ACPY-RULE-011: nested conditional state effects inside a blocking guard require explicit CFG implication proof

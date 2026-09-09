@@ -570,6 +570,13 @@ PYC semantic contracts.
     - [x] Add Decision 0207's first branch-local effect join: lower one Python
       `if/else` to a verifier-proven complementary presence pair over distinct
       lexical state owners and one atomic runtime candidate.
+    - [x] Extend Decision 0221's one-input outputless branches with an outer
+      blocking candidate (FW-0002): independently prove candidate-qualified
+      state presence in Rule/Firing and QueueGraph; validate CMT/NDF parity.
+    - [x] Add Decision 0221 field assignment shorthand (FW-0005): local record
+      values and captured persistent records/list entries share `ac.var.with`
+      lowering; preserve sequential values, index capture and atomic commit.
+      Validate explicit-update equivalence, backpressure and CMT/NDF examples.
     - [x] Add Decision 0208's scalar same-owner join: introduce compiler-owned
       `ac.var.select`, produce one state proposal, and preserve gfsim/PYC mux
       parity without adding a Python primitive.

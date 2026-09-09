@@ -12,6 +12,7 @@ that all 240 candidates are implemented.
 | I2 | generated gfsim operand/dependency/execute/release/cancel/backpressure/reset/isolation matrix | H2/H1 integration; stateful PYC/RTL after #22 |
 | WBA | generated gfsim terminal/apply/retry/cancel/drain/backpressure/reset/isolation matrix | H2/H1 integration; stateful PYC/RTL after #22 |
 | ROB | generated gfsim capacity/completion/durable-handoff/recovery/isolation matrix and offline replay | NDF traceability review; CMT/W2 and H2/H1 integration; stateful PYC/RTL |
+| CMT | generated gfsim independent handoff/history-dedup/backpressure/diagnostics/recovery/isolation matrix and offline replay | NDF traceability; actual ROB/MPQ/BROB integration; stateful PYC/RTL |
 
 ## Start here
 

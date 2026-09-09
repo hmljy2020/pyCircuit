@@ -1,0 +1,58 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.16, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/lc/pyCircuit
+configfile: pyproject.toml
+plugins: xdist-3.8.0, cov-7.1.0
+collected 318 items
+
+tests/python/agentic-circuit/python_frontend/test_acpy.py ...            [  0%]
+tests/python/agentic-circuit/python_frontend/test_blocking_branch.py ... [  1%]
+...                                                                      [  2%]
+tests/python/agentic-circuit/python_frontend/test_definitions.py ....... [  5%]
+..                                                                       [  5%]
+tests/python/agentic-circuit/python_frontend/test_determinism.py ..      [  6%]
+tests/python/agentic-circuit/python_frontend/test_jit_blocks.py ......ss [  8%]
+....s.........                                                           [ 13%]
+tests/python/agentic-circuit/python_frontend/test_jit_source_closure.py . [ 13%]
+.....                                                                    [ 15%]
+tests/python/agentic-circuit/python_frontend/test_lower_acir.py ...s     [ 16%]
+tests/python/agentic-circuit/python_frontend/test_normalization.py ...   [ 17%]
+tests/python/agentic-circuit/python_frontend/test_process.py .....       [ 18%]
+tests/python/agentic-circuit/python_frontend/test_public_api.py ........ [ 21%]
+..........                                                               [ 24%]
+tests/python/agentic-circuit/python_frontend/test_queue_codegen.py ..... [ 26%]
+........                                                                 [ 28%]
+tests/python/agentic-circuit/python_frontend/test_queue_frontend.py .... [ 29%]
+........................................................................ [ 52%]
+......................................................................   [ 74%]
+tests/python/agentic-circuit/python_frontend/test_resources.py ....      [ 75%]
+tests/python/agentic-circuit/python_frontend/test_rule_literal_context.py . [ 76%]
+....                                                                     [ 77%]
+tests/python/agentic-circuit/python_frontend/test_scopes_collections.py . [ 77%]
+....                                                                     [ 78%]
+tests/python/agentic-circuit/python_frontend/test_source_capture.py .... [ 80%]
+....                                                                     [ 81%]
+tests/python/agentic-circuit/python_frontend/test_source_names.py ..     [ 82%]
+tests/python/agentic-circuit/python_frontend/test_static_eval.py ....... [ 84%]
+.                                                                        [ 84%]
+tests/python/agentic-circuit/contracts/test_contracts.py ............... [ 89%]
+.....F.....                                                              [ 92%]
+tests/python/agentic-circuit/contracts/test_ir_coverage.py .......F...   [ 96%]
+tests/python/agentic-circuit/contracts/test_queue_type_hygiene.py .....  [ 97%]
+tests/python/agentic-circuit/cli/test_all_commands.py .                  [ 98%]
+tests/python/agentic-circuit/cli/test_workspace.py .....                 [ 99%]
+tests/integration/agentic-circuit/e2e/test_blocking_branch.py .          [100%]
+
+=================================== FAILURES ===================================
+____ RepositoryContractsTest.test_read_only_checker_accepts_the_repository _____
+tests/python/agentic-circuit/contracts/test_contracts.py:1149: in test_read_only_checker_accepts_the_repository
+    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+E   AssertionError: 0 != 1 : error: error: PYC machine-readable coverage is stale; run tools/check-pyc-inventory.py --write-ledger
+_________ IRCoverageTest.test_read_only_checker_accepts_the_repository _________
+tests/python/agentic-circuit/contracts/test_ir_coverage.py:128: in test_read_only_checker_accepts_the_repository
+    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+E   AssertionError: 0 != 1 : error: docs/development/acir/verification/ir-coverage.md is stale; regenerate with tools/agentic-circuit/check-ir-coverage.py --write-ledger
+=========================== short test summary info ============================
+FAILED tests/python/agentic-circuit/contracts/test_contracts.py::RepositoryContractsTest::test_read_only_checker_accepts_the_repository
+FAILED tests/python/agentic-circuit/contracts/test_ir_coverage.py::IRCoverageTest::test_read_only_checker_accepts_the_repository
+============= 2 failed, 312 passed, 4 skipped in 62.50s (0:01:02) ==============

@@ -3221,3 +3221,68 @@ TEST(QueueGraphPlanTest, BackendsRejectUncatalogedApplicationBlock) {
 
 } // namespace
 } // namespace acir::codegen
+
+namespace acir::codegen {
+TEST(QueueGraphPlanTest, BlockingBranchPresenceRequiresCandidateConjunct) {
+  mlir::MLIRContext context;
+  context.loadDialect<ac::ACIRDialect, mlir::DLTIDialect>();
+  auto module =
+      mlir::parseSourceString<mlir::ModuleOp>(kStatefulFiring, &context);
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(freezeQueueGraph(*module));
+  auto plan = buildQueueGraphPlan(*module);
+  ASSERT_TRUE(bool(plan)) << llvm::toString(plan.takeError());
+  auto &firing = *llvm::find_if(plan->blocks, [](const QueueBlockPlan &block) {
+    return block.kind == "firing";
+  });
+  firing.expressions.push_back(
+      {"zero", "constant", "i8", {}, "", "", "0 : i8"});
+  firing.expressions.push_back(
+      {"candidate", "cmp", "i1", {"item", "zero"}, "", "ne"});
+  firing.expressions.push_back(
+      {"branch", "cmp", "i1", {"item", "zero"}, "", "eq"});
+  firing.expressions.push_back(
+      {"selected", "and", "i1", {"candidate", "branch"}});
+  firing.guard = "candidate";
+  for (auto &output : firing.outputPresence)
+    output.present = firing.guard;
+  auto verifyPresence = [&](llvm::StringRef presence, bool accepted) {
+    firing.stateWrites.front().present = presence.str();
+    auto error = verifyQueueGraphPlan(*plan);
+    if (accepted) {
+      EXPECT_FALSE(bool(error)) << llvm::toString(std::move(error));
+    } else {
+      ASSERT_TRUE(bool(error));
+      EXPECT_NE(llvm::toString(std::move(error)).find("presence must imply"),
+                std::string::npos);
+    }
+  };
+  verifyPresence("selected", true);
+  verifyPresence("branch", false);
+  verifyPresence("candidate", true);
+  firing.expressions.push_back(
+      {"false_value", "constant", "i1", {}, "", "", "false"});
+  verifyPresence("false_value", true);
+  firing.expressions.push_back(
+      {"unsafe_or", "or", "i1", {"candidate", "branch"}});
+  verifyPresence("unsafe_or", false);
+  // Shared DAGs must not expand exponentially during proof.
+  std::string previous = "selected";
+  for (unsigned i = 0; i < 128; ++i) {
+    std::string next = "conjunct" + std::to_string(i);
+    firing.expressions.push_back({next, "and", "i1", {previous, previous}});
+    previous = next;
+  }
+  verifyPresence(previous, true);
+  // Reassociated conjunctions still imply a compound candidate.
+  firing.guard = "selected";
+  for (auto &output : firing.outputPresence)
+    output.present = firing.guard;
+  firing.expressions.push_back({"inner", "mul", "i1", {"branch", "branch"}});
+  firing.expressions.push_back(
+      {"reassociated", "and", "i1", {"inner", "candidate"}});
+  verifyPresence("reassociated", true);
+  verifyPresence("candidate", false);
+}
+
+} // namespace acir::codegen

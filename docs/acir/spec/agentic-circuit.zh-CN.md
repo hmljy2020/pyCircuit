@@ -418,7 +418,7 @@ Python 前端只暴露普通值、module/class 字段和 lexical scope，不增�
 类型。MLIR 推导两个正交属性：生命周期为 static、temporary 或 persistent；更新能力
 为 immutable 或 assignable。`const` 是 static immutable；rule 参数、返回值和局部
 表达式是 temporary immutable SSA snapshot；scope-owned state 是 persistent
-assignable，但一次 rule 读到的 committed value 仍不可变，赋值只提出下一拍状态。
+assignable，但一次 rule 读到的 committed value 仍不可变，赋值仅提出随 rule 提交的新状态。
 
 这些属性是编译器分析结果，不是 Python marker。后续 pass 再根据类型、访问模式、
 def-use、调度和 NDF/target 限制选择实际存储与传输结构。`ac.var` 是表达式值和推导
@@ -436,6 +436,22 @@ zero image；storage selection 会保留 enum nominal type，不允许退化成�
 `ac.var.read_element`/`ac.var.assign_element`，storage selection 再选择只更新 touched
 entry 的 committed storage。只有当 `ACDataFlowAnalyzer` 证明动态 index 的值域位于
 该 list shape 内时才接受；作者不需要在前端书写范围检查或 marker。
+
+在 `@ac.rule` 内，`local.x = y` 等价于 `local = local.with_fields(x=y)`。
+局部记录必须已定义；更新产生新的局部 SSA 值，不修改其他局部副本。
+`local = entries[i]` 后修改 `local.x` 不会隐式回写列表，需要显式执行
+`entries[i] = local`。Queue 输入参数不能直接作为字段赋值目标，应先绑定到局部变量。
+
+持久记录支持 `retained.x = y`，持久列表元素支持 `histories[i].valid = False`。
+其他字段保持原值，修改随整条 rule 原子提交，不增加周期；保留状态声明和 `nonlocal`
+捕获要求。同一 rule 的连续赋值及后续索引读取使用此前的状态提案，已经绑定的局部
+快照不变。索引在赋值位置捕获一次；同一已解析索引的写入合并，不同索引仍必须通过
+原有的互不重叠或条件互斥证明。
+
+首期仅支持记录名或持久列表元素上的单层字段赋值，不支持嵌套字段目标、切片目标、
+字段增量赋值及多目标赋值。未知字段、类型不符和不安全索引仍被拒绝。
+`with_fields` 保留为纯表达式，两种写法复用 `ac.var.with` 和状态提案 lowering，
+不增加后端特有的可变对象语义。
 
 `ac.find(values, where=predicate, key=key)` 是 persistent Python list 上与存储无关的
 集合查询。返回的 intrinsic value 具有 `.valid`、`.index` 和 `.value`；省略 `key` 时
@@ -971,6 +987,13 @@ proposal 保留为有序 owner-local batch。`ACDataFlowAnalyzer` 与 QueueGraph
 write 的 index domain 不相交，或它们的 path predicate 在结构上互斥。每个源码 index 仍必须
 满足已有的精确位宽/full-domain 安全证明。一个 branch value 依赖另一个 branch 写入的 owner，
 仍需等待通用 state join。
+
+上述单输入、无输出的分支也可以放在外层阻塞 `if` 内。外层条件在进入分支时捕获，
+决定整条 rule 能否提交；每项分支写入的条件是“外层条件且分支条件”。外层条件为假时，
+既不消费输入，也不提交状态。Rule/Firing 和最终 QueueGraph 都独立检查写入条件是否包含
+执行条件；证明仅使用类型正确的布尔标识、常量和合取，无法证明时继续拒绝。
+这项扩展不包含阻塞分支中的 selected output 或 early-return chain，也不放宽索引安全检查，
+不提供惰性分支读取（Decision 0221）。
 
 一个 stateful output 可以是 optional。Python 末尾的
 `if condition: return value` 再跟一个 `return`，表示 input 和之前的 state effect 总是被选择，

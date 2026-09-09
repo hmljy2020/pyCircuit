@@ -1,0 +1,3 @@
+ebcdf9a694018601189d0a012acc1b309cac755ae6fa704fc415ae62768aa19e  designs/davincioo/spe/ooo/cmt.py
+905f2dc694bd8a90f71bd98e10d1e40533d98186e1398bf93b65b3045d654af7  designs/davincioo/tests/spe/ooo/test_cmt.py
+0c04073ac92986b62fc6216b1474688cf94b85806420cf2f9943e6c4bbbce97d  designs/davincioo/spe/ooo/ndf/cmt/accept.md

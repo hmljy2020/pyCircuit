@@ -1,0 +1,14 @@
+Baseline: 0e11f0e93bde4668f8a5b43c48b644e0864fbc7f
+
+local = retained
+    local.x = command.value
+    return local
+ACPY-RULE-002: pure rules require one value-returning path; stateful rules require one indexed state assignment and an optional value return; rule '__ac_nested_field_module_update' is unsupported
+
+retained.valid = True
+    return retained
+ACPY-RULE-002: pure rules require one value-returning path; stateful rules require one indexed state assignment and an optional value return; rule '__ac_nested_field_module_update' is unsupported
+
+entries[0].valid = False
+    return retained
+ACPY-RULE-002: pure rules require one value-returning path; stateful rules require one indexed state assignment and an optional value return; rule '__ac_nested_field_module_update' is unsupported
