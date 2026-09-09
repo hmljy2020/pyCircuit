@@ -5,11 +5,11 @@
 
 | 编号 | 问题 | 当前状态 | 用户审阅 | 主线状态 |
 | --- | --- | --- | --- | --- |
-| FW-0001 | [重复状态读取优化后 footprint 失效](FW-0001-cse-footprints.md) | 确认的编译器缺陷；fixed locally, uncommitted（本地已修复，未提交） | 待审阅 | 未提交 |
-| FW-0002 | [阻塞条件内的嵌套状态更新受限](FW-0002-nested-blocking-guard.md) | fixed locally, uncommitted（本地已修复，未提交；单输入无输出） | 待审阅 | 未提交 |
+| FW-0001 | [重复状态读取优化后 footprint 失效](FW-0001-cse-footprints.md) | 本地已修复并提交 | 待审阅 | 未提交 |
+| FW-0002 | [阻塞条件内的嵌套状态更新受限](FW-0002-nested-blocking-guard.md) | 本地已修复并提交 | 待审阅 | 未提交 |
 | FW-0003 | [无法连续录制跨复位回放](FW-0003-replay-reset.md) | 现有录制边界；未扩展 | 待审阅 | 未提交 |
 | FW-0004 | [acir-build 生成程序链接缺少依赖](FW-0004-acir-build-link.md) | 工具链路失败；根因和修复待进一步确认 | 待审阅 | 未提交 |
-| FW-0005 | [字段赋值简写](FW-0005-field-assignment-syntax.md) | fixed locally, uncommitted（本地已实现并验证） | 待审阅 | 未提交 |
+| FW-0005 | [字段赋值简写](FW-0005-field-assignment-syntax.md) | 本地已修复并提交 | 待审阅 | 未提交 |
 | FW-0006 | [纯辅助函数与显式内联](FW-0006-pure-helper-functions.md) | 表达能力增强建议；未实现 | 待审阅 | 未提交 |
 | FW-0007 | [非法 output presence 的诊断顺序](FW-0007-output-presence-diagnostic.md) | 负例诊断不匹配；待修正 | 待审阅 | 未提交 |
 

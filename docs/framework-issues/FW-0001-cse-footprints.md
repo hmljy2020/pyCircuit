@@ -1,6 +1,6 @@
 # FW-0001：重复状态读取优化后 footprint 失效
 
-- 状态：确认的编译器缺陷；fixed locally, uncommitted（本地已修复，未提交）。
+- 状态：本地已修复并提交；尚未向主线提交。
 - 用户审阅：待审阅。
 - 主线状态：未提交 issue/PR，未确认主线合入。
 
@@ -26,5 +26,5 @@
 
 在 effect/footprint 推导之前先运行 CSE，保留原有严格 verifier。
 修改：[LowerRules.cpp](../../compiler/acir/lib/Transforms/LowerRules.cpp)，对应 Decision 0221。
-修复后的工具从上述基线加本地修改重新构建；修复 commit 尚无，提交后补记。
+修复后的工具从上述基线加本地修改重新构建；修复 commit：`135dd90a078201a29baa807771db95e520a63d96`。
 验证：focused lit 4 项、CMT 8 项、ROB 9 项通过。

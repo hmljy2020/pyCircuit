@@ -1,6 +1,6 @@
 # FW-0005：用直接字段赋值简化 with_fields 表达
 
-- 状态：fixed locally, uncommitted（本地已实现并验证，未提交）。
+- 状态：本地已修复并提交；尚未向主线提交。
 - 用户审阅：待审阅。
 - 主线状态：未提交 issue/PR，未确认主线合入。
 
@@ -91,4 +91,4 @@ CMT 9 项和 ROB 9 项通过；四个 CMT 回放场景的浏览器检查通过�
 额外 MLIR 检查 24 项通过、1 项诊断不匹配，单独记录为
 [FW-0007](FW-0007-output-presence-diagnostic.md)，不宣称完整原生 gate 全绿。
 
-修复版本：上述基线加当前未提交补丁（`fixed locally, uncommitted`）；尚无修复 commit。
+修复版本：`135dd90a078201a29baa807771db95e520a63d96`；已本地提交，尚未向主线提交。
