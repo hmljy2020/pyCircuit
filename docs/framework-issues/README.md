@@ -11,7 +11,8 @@
 | FW-0004 | [acir-build 生成程序链接缺少依赖](FW-0004-acir-build-link.md) | 工具链路失败；根因和修复待进一步确认 | 待审阅 | 未提交 |
 | FW-0005 | [字段赋值简写](FW-0005-field-assignment-syntax.md) | 本地已修复并提交 | 待审阅 | 未提交 |
 | FW-0006 | [纯辅助函数与显式内联](FW-0006-pure-helper-functions.md) | 表达能力增强建议；未实现 | 待审阅 | 未提交 |
-| FW-0007 | [非法 output presence 的诊断顺序](FW-0007-output-presence-diagnostic.md) | 负例诊断不匹配；待修正 | 待审阅 | 未提交 |
+| FW-0007 | [非法 output presence 的诊断顺序](FW-0007-output-presence-diagnostic.md) | fixed locally, uncommitted（诊断回归已修复） | 待审阅 | 未提交 |
+| FW-0008 | [原生单测期望未同步](FW-0008-native-test-expectations.md) | fixed locally, uncommitted（测试期望已同步） | 待审阅 | 未提交 |
 
 ## 维护约定
 

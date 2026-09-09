@@ -1,0 +1,49 @@
+[ RUN      ] ACIROpsTest.RegistryContainsExactQueueVarOperations
+/home/lc/pyCircuit/tests/cpp/agentic-circuit/Dialect/ACIR/OpsTest.cpp:365: Failure
+Expected equality of these values:
+  actual
+    Which is: { "ac.address_map", "ac.address_space", "ac.array", "ac.assert", "ac.await_event", "ac.barrier", "ac.bitfield", "ac.broadcast", "ac.credit", "ac.credit.yield", "ac.dependency", "ac.dependency.yield", "ac.ensure", "ac.enum", "ac.event", "ac.event_queue", "ac.expect", "ac.expect.yield", "ac.feedback", "ac.feedback.yield", "ac.firing", "ac.firing.condition", "ac.firing.output", "ac.firing.yield", "ac.fork", "ac.guarantee", "ac.instance", "ac.instances", "ac.instrumentation", "ac.interface", "ac.marker.obligation", "ac.marker.type", ... }
+  expected
+    Which is: { "ac.address_map", "ac.address_space", "ac.array", "ac.assert", "ac.await_event", "ac.barrier", "ac.bitfield", "ac.broadcast", "ac.credit", "ac.credit.yield", "ac.dependency", "ac.dependency.yield", "ac.ensure", "ac.enum", "ac.event", "ac.event_queue", "ac.expect", "ac.expect.yield", "ac.feedback", "ac.feedback.yield", "ac.firing", "ac.firing.condition", "ac.firing.output", "ac.firing.yield", "ac.fork", "ac.guarantee", "ac.instance", "ac.instances", "ac.instrumentation", "ac.interface", "ac.marker.obligation", "ac.marker.type", ... }
+
+[  FAILED  ] ACIROpsTest.RegistryContainsExactQueueVarOperations (1 ms)
+
+[ RUN      ] ACIROpsTest.RuntimeAndQueueVarRegistryIsExact
+/home/lc/pyCircuit/tests/cpp/agentic-circuit/Dialect/ACIR/OpsTest.cpp:810: Failure
+Expected equality of these values:
+  context.getRegisteredOperationsByDialect("ac").size()
+    Which is: 142
+  140u
+    Which is: 140
+
+[  FAILED  ] ACIROpsTest.RuntimeAndQueueVarRegistryIsExact (0 ms)
+
+[ RUN      ] ACIROpsTest.TableEntryTypeRejectsNonStructRecordKinds
+/home/lc/pyCircuit/tests/cpp/agentic-circuit/Dialect/ACIR/OpsTest.cpp:1742: Failure
+Expected: (diagnostic.find("entry type must be a <=64-bit integer or an " "immutable recursive struct")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+'ac.table' op entry type must be a <=64-bit integer, nominal enum, or immutable recursive struct
+
+/home/lc/pyCircuit/tests/cpp/agentic-circuit/Dialect/ACIR/OpsTest.cpp:1742: Failure
+Expected: (diagnostic.find("entry type must be a <=64-bit integer or an " "immutable recursive struct")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+'ac.table' op entry type must be a <=64-bit integer, nominal enum, or immutable recursive struct
+
+[  FAILED  ] ACIROpsTest.TableEntryTypeRejectsNonStructRecordKinds (1 ms)
+
+[ RUN      ] SmallDomain/SelectorOracleTest.MatchesManualSmallDomainEnumeration/GGMixed_1799
+[       OK ] SmallDomain/SelectorOracleTest.MatchesManualSmallDomainEnumeration/GGMixed_1799 (12 ms)
+[----------] 1800 tests from SmallDomain/SelectorOracleTest (6473 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1844 tests from 4 test suites ran. (21334 ms total)
+[  PASSED  ] 1841 tests.
+[  FAILED  ] 3 tests, listed below:
+
+[----------] Global test environment tear-down
+[==========] 1844 tests from 4 test suites ran. (21334 ms total)
+[  PASSED  ] 1841 tests.
+[  FAILED  ] 3 tests, listed below:
+[  FAILED  ] ACIROpsTest.RegistryContainsExactQueueVarOperations
+[  FAILED  ] ACIROpsTest.RuntimeAndQueueVarRegistryIsExact
+[  FAILED  ] ACIROpsTest.TableEntryTypeRejectsNonStructRecordKinds
+
+ 3 FAILED TESTS

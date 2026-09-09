@@ -1,0 +1,120 @@
+-- Testing: 2 of 197 tests, 2 workers --
+FAIL: AgenticCircuit :: ACIR/predicate-type-invalid.mlir (1 of 2)
+******************** TEST 'AgenticCircuit :: ACIR/predicate-type-invalid.mlir' FAILED ********************
+Exit Code: 1
+
+Command Output (stderr):
+--
+RUN: at line 1: /home/lc/opt/llvm-22.1.8/bin/split-file /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/predicate-type-invalid.mlir /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/predicate-type-invalid.mlir.tmp
++ /home/lc/opt/llvm-22.1.8/bin/split-file /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/predicate-type-invalid.mlir /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/predicate-type-invalid.mlir.tmp
+RUN: at line 2: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/predicate-type-invalid.mlir.tmp/rule-candidate.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/predicate-type-invalid.mlir --check-prefix=RULE-CANDIDATE
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/predicate-type-invalid.mlir.tmp/rule-candidate.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/predicate-type-invalid.mlir --check-prefix=RULE-CANDIDATE
+/home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/predicate-type-invalid.mlir:20:20: error: RULE-CANDIDATE: expected string not found in input
+// RULE-CANDIDATE: 'ac.rule.condition' op condition must be !ac.var<i1>
+                   ^
+<stdin>:1:1: note: scanning from here
+/home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/predicate-type-invalid.mlir.tmp/rule-candidate.mlir:7:5: error: 'ac.rule.output' op optional output presence requires one input and a true candidate
+^
+<stdin>:1:156: note: possible intended match here
+/home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/predicate-type-invalid.mlir.tmp/rule-candidate.mlir:7:5: error: 'ac.rule.output' op optional output presence requires one input and a true candidate
+                                                                                                                                                           ^
+
+Input file: <stdin>
+Check file: /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/predicate-type-invalid.mlir
+
+-dump-input=help explains the following input dump.
+
+Input was:
+<<<<<<
+            1: /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/predicate-type-invalid.mlir.tmp/rule-candidate.mlir:7:5: error: 'ac.rule.output' op optional output presence requires one input and a true candidate
+check:20'0     X~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ error: no match found
+check:20'1                                                                                                                                                                ?                                                                                     possible intended match
+            2:  ac.rule.output %item when %true ordinal 0 : !ac.var<i8>, !ac.var<i1>
+check:20'0     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            3:  ^
+check:20'0     ~~~
+            4: /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/predicate-type-invalid.mlir.tmp/rule-candidate.mlir:7:5: note: see current operation: "ac.rule.output"(%arg0, %2) <{ordinal = 0 : i64}> : (!ac.var<i8>, !ac.var<i1>) -> ()
+check:20'0     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+>>>>>>
+
+--
+
+********************
+FAIL: AgenticCircuit :: ACIR/rule-invalid.mlir (2 of 2)
+******************** TEST 'AgenticCircuit :: ACIR/rule-invalid.mlir' FAILED ********************
+Exit Code: 1
+
+Command Output (stderr):
+--
+RUN: at line 1: /home/lc/opt/llvm-22.1.8/bin/split-file /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp
++ /home/lc/opt/llvm-22.1.8/bin/split-file /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp
+RUN: at line 2: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/missing-output-presence.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=MISSING-OUTPUT
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/missing-output-presence.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=MISSING-OUTPUT
+RUN: at line 3: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/return-parent.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=RETURN
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/return-parent.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=RETURN
+RUN: at line 4: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/type-marker.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=TYPE
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/type-marker.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=TYPE
+RUN: at line 5: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/value-marker.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=VALUE
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/value-marker.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=VALUE
+RUN: at line 6: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/obligation-marker.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=OBLIGATION
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/obligation-marker.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=OBLIGATION
+RUN: at line 7: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/domain.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=DOMAIN
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/domain.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=DOMAIN
+RUN: at line 8: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-ordinal.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=OUTPUT-ORDINAL
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-ordinal.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=OUTPUT-ORDINAL
+RUN: at line 9: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-payload.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=OUTPUT-PAYLOAD
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-payload.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=OUTPUT-PAYLOAD
+RUN: at line 10: /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-presence-type.mlir 2>&1 | /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=OUTPUT-PRESENCE-TYPE
++ /home/lc/opt/llvm-22.1.8/bin/not /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/bin/acir-opt-internal /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-presence-type.mlir
++ /home/lc/opt/llvm-22.1.8/bin/FileCheck /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir --check-prefix=OUTPUT-PRESENCE-TYPE
+/home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir:138:26: error: OUTPUT-PRESENCE-TYPE: expected string not found in input
+// OUTPUT-PRESENCE-TYPE: 'ac.rule.output' op condition must be !ac.var<i1>
+                         ^
+<stdin>:1:1: note: scanning from here
+/home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-presence-type.mlir:8:5: error: 'ac.rule.output' op optional output presence requires one input and a true candidate
+^
+<stdin>:1:152: note: possible intended match here
+/home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-presence-type.mlir:8:5: error: 'ac.rule.output' op optional output presence requires one input and a true candidate
+                                                                                                                                                       ^
+
+Input file: <stdin>
+Check file: /home/lc/pyCircuit/tests/mlir/agentic-circuit/ACIR/rule-invalid.mlir
+
+-dump-input=help explains the following input dump.
+
+Input was:
+<<<<<<
+             1: /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-presence-type.mlir:8:5: error: 'ac.rule.output' op optional output presence requires one input and a true candidate
+check:138'0     X~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ error: no match found
+check:138'1                                                                                                                                                            ?                                                                                     possible intended match
+             2:  ac.rule.output %item when %item ordinal 0 : !ac.var<i32>, !ac.var<i32>
+check:138'0     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+             3:  ^
+check:138'0     ~~~
+             4: /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/ACIR/Output/rule-invalid.mlir.tmp/output-presence-type.mlir:8:5: note: see current operation: "ac.rule.output"(%arg0, %arg0) <{ordinal = 0 : i64}> : (!ac.var<i32>, !ac.var<i32>) -> ()
+check:138'0     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+>>>>>>
+
+--
+
+********************
+********************
+Failed Tests (2):
+  AgenticCircuit :: ACIR/predicate-type-invalid.mlir
+  AgenticCircuit :: ACIR/rule-invalid.mlir
+
+
+Testing Time: 0.12s
+
+Total Discovered Tests: 197
+  Excluded: 195 (98.98%)
+  Failed  :   2 (1.02%)

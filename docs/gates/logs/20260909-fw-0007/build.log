@@ -1,0 +1,6 @@
+[1/6] Building CXX object compiler/acir/lib/Dialect/ACIR/CMakeFiles/ACIRDialect.dir/ACIROps.cpp.o
+[2/6] Linking CXX static library compiler/acir/lib/Dialect/ACIR/libACIRDialect.a
+[3/6] Linking CXX executable bin/acir-queue-plan
+[4/6] Linking CXX executable bin/acir-queue-cxxgen
+[5/6] Linking CXX executable bin/acir-opt-internal
+[6/6] Linking CXX executable bin/acir-opt

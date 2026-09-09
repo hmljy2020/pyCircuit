@@ -7448,6 +7448,17 @@ dynamic indices wider than the original 64-entry snapshot mask.
 - FW-0005: Generic gfsim equivalence/backpressure and CMT/ROB regression evidence:
   `docs/gates/logs/20260909-fw-0005/summary.md`.
 
+- FW-0007 restores type-first diagnostics in parent Rule/Firing verification:
+  validate candidate/output/proposal Boolean types before implication, retaining
+  the shared typed proof and original negative-test expectations. Six malformed
+  predicate cases and related regressions are recorded in
+  `docs/gates/logs/20260909-fw-0007/summary.md`.
+
+- FW-0008 synchronizes the native exact operation inventories and Table entry
+  diagnostic expectation with the accepted recursive invariant and nominal enum
+  semantics. Evidence is recorded in
+  `docs/gates/logs/20260909-fw-0008/summary.md`.
+
 - A framework-owned three-file fixture uses imported Enum/struct contracts,
   two runtime payload inputs, two heterogeneous outputs, one keyword-only const,
   a 128-entry recursive-struct state owner, one read-only firing, and one

@@ -1,0 +1,8 @@
+[       OK ] SmallDomain/SelectorOracleTest.MatchesManualSmallDomainEnumeration/GGSame_1798 (0 ms)
+[ RUN      ] SmallDomain/SelectorOracleTest.MatchesManualSmallDomainEnumeration/GGMixed_1799
+[       OK ] SmallDomain/SelectorOracleTest.MatchesManualSmallDomainEnumeration/GGMixed_1799 (12 ms)
+[----------] 1800 tests from SmallDomain/SelectorOracleTest (6570 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1844 tests from 4 test suites ran. (21599 ms total)
+[  PASSED  ] 1844 tests.

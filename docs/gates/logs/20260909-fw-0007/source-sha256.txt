@@ -1,0 +1,7 @@
+9c496914f7702b885cb9456bcf44776e556b934994593529b2f43ed3339bac81  compiler/acir/lib/Dialect/ACIR/ACIROps.cpp
+9d84cad1ddcff1304a0940fa99048c256e6b767e803f68fcd3921043e10ef3c1  tests/mlir/agentic-circuit/ACIR/predicate-type-invalid.mlir
+6a59fd54529b90016c14d922c651d93d085bb67b296a97ea5e2e7191463f49b0  docs/framework-issues/FW-0007-output-presence-diagnostic.md
+c1ed53692072d088ef0dacdeee1544e35563d317b21d4dcb3103540a13603a0e  docs/framework-issues/FW-0008-native-test-expectations.md
+7fcdc608a4bb844ef66730b80701c327e64c1f307d77659b4a0d90ea81bab736  docs/framework-issues/README.md
+e9b89991000a86c5a8a7176fa2b2c9bf30c043d9ac7c94eb2d24578359fca440  docs/rfcs/pyc6-decisions.md
+f546f8a44677bc992153a00727c117b8f4fa3e554614746239ce71c41a9916a0  docs/gates/decision_status_v6.md

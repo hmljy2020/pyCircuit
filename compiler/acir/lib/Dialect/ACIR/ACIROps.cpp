@@ -433,6 +433,7 @@ LogicalResult TransformOp::verify() {
   return verifyLoweredRuleTransformContract(*this);
 }
 
+static LogicalResult verifyI1VarCondition(Operation *operation, Value condition);
 static TableOp resolveTable(Operation *operation, FlatSymbolRefAttr reference);
 static bool tableVisibleFrom(Operation *operation, TableOp table);
 static LogicalResult verifyStaticallySafeRuleTableIndex(Operation *operation,
@@ -505,6 +506,10 @@ LogicalResult RuleOp::verify() {
     } else if (isa<VarAssignOp, VarAssignElementOp>(operation)) {
       hasVariableWrite = true;
     } else if (auto condition = dyn_cast<RuleConditionOp>(operation)) {
+      // The parent verifier runs before nested op verifiers. Diagnose invalid
+      // operand types before interpreting them as Boolean path evidence.
+      if (failed(verifyI1VarCondition(condition, condition.getCondition())))
+        return failure();
       ++conditions;
       conditionValue = condition.getCondition();
     } else if (!isMemoryEffectFree(&operation) &&
@@ -533,6 +538,8 @@ LogicalResult RuleOp::verify() {
       return emitOpError("requires one SSA presence record per output");
     llvm::SmallDenseSet<int64_t> ordinals;
     for (RuleOutputOp output : outputPaths) {
+      if (failed(verifyI1VarCondition(output, output.getWhen())))
+        return failure();
       if (!ordinals.insert(output.getOrdinal()).second)
         return output.emitOpError(
             "output presence must uniquely name one rule result");
@@ -544,6 +551,9 @@ LogicalResult RuleOp::verify() {
             "optional output presence requires one input and a true candidate");
     }
     for (TableProposeOp proposal : proposals) {
+      if (proposal.getWhen() &&
+          failed(verifyI1VarCondition(proposal, proposal.getWhen())))
+        return failure();
       if (!proposal.getWhen() ||
           !presenceImpliesCandidate(proposal.getWhen(), conditionValue))
         return proposal.emitOpError(
@@ -1125,6 +1135,9 @@ LogicalResult FiringOp::verify() {
     return emitOpError("outputless firing must update state");
   if (conditions.size() > 1)
     return emitOpError("permits at most one functional condition");
+  for (FiringConditionOp condition : conditions)
+    if (failed(verifyI1VarCondition(condition, condition.getCondition())))
+      return failure();
   SmallVector<FiringOutputOp> outputPaths;
   getBody().walk([&](FiringOutputOp output) { outputPaths.push_back(output); });
   for (FiringOutputOp output : outputPaths)
@@ -1144,6 +1157,8 @@ LogicalResult FiringOp::verify() {
     Value condition = conditions.front().getCondition();
     llvm::SmallDenseSet<int64_t> ordinals;
     for (FiringOutputOp output : outputPaths) {
+      if (failed(verifyI1VarCondition(output, output.getWhen())))
+        return failure();
       if (!ordinals.insert(output.getOrdinal()).second)
         return output.emitOpError(
             "output presence must uniquely name one firing result");
@@ -1154,6 +1169,9 @@ LogicalResult FiringOp::verify() {
             "optional output presence requires one input and a true candidate");
     }
     for (TableProposeOp proposal : proposals) {
+      if (proposal.getWhen() &&
+          failed(verifyI1VarCondition(proposal, proposal.getWhen())))
+        return failure();
       if (!proposal.getWhen() ||
           !presenceImpliesCandidate(proposal.getWhen(), condition))
         return proposal.emitOpError(
