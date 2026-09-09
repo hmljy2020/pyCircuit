@@ -577,6 +577,10 @@ PYC semantic contracts.
       values and captured persistent records/list entries share `ac.var.with`
       lowering; preserve sequential values, index capture and atomic commit.
       Validate explicit-update equivalence, backpressure and CMT/NDF examples.
+    - [x] Add Decision 0229 typed pure helpers (FW-0006): preserve ordinary
+      helpers as verified `func.call` through QueueGraph and C++, expand
+      `@ac.inline` in ACIR and expand ordinary helper bodies for scalar PYC;
+      validate CMT identity and diagnostic helpers against its NDF and gfsim.
     - [x] Add Decision 0208's scalar same-owner join: introduce compiler-owned
       `ac.var.select`, produce one state proposal, and preserve gfsim/PYC mux
       parity without adding a Python primitive.

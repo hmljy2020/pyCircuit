@@ -33,6 +33,30 @@ NDF format 0.2，L2 微架构。条款为本地 draft，尚未完成项目 ID �
 该功能逻辑已通过 [CMT 单模块验收](../../../../../../docs/gates/logs/20260909-cmt-history-loop/summary.md)；源码中的 NDF 注释标记对应本文件的 `doc_id`。
 
 ```python
+@ac.inline
+def increment_saturated_u16(value: ac.u16) -> ac.u16:
+    return value + 1 if value != 65535 else value
+
+
+def next_diagnostic_count(valid: bool, value: ac.u16) -> ac.u16:
+    return increment_saturated_u16(value) if valid else 1
+
+
+def same_handoff_identity(
+    epoch: EpochKey,
+    inst: InstKey,
+    block: BlockKey,
+    rob: RobKey,
+    retained: RobEvent,
+) -> bool:
+    return (
+        epoch == retained.epoch
+        and inst == retained.inst
+        and block == retained.block
+        and rob == retained.rob
+    )
+
+
 # NDF: DOC-DAV-SPE-OOO-CMT-ACKNOWLEDGE-MPQ
 @ac.rule
 def acknowledge_mpq(response):
@@ -44,10 +68,9 @@ def acknowledge_mpq(response):
         histories,
         where=lambda row: (
             row.valid
-            and row.epoch == retained.epoch
-            and row.inst == retained.inst
-            and row.block == retained.block
-            and row.rob == retained.rob
+            and same_handoff_identity(
+                row.epoch, row.inst, row.block, row.rob, retained
+            )
             and row.history_sequence == history.history_sequence
         ),
     )
@@ -56,15 +79,13 @@ def acknowledge_mpq(response):
         or not mpq_sent
         or (retained.handoff_required_mask & HANDOFF_OWNER_MPQ) == 0
     )
-    identity_mismatch = (
-        request.epoch != retained.epoch
-        or request.inst != retained.inst
-        or request.block != retained.block
-        or request.rob != retained.rob
-        or history.epoch != retained.epoch
-        or history.inst != retained.inst
-        or history.block != retained.block
-        or history.rob != retained.rob
+    identity_mismatch = not (
+        same_handoff_identity(
+            request.epoch, request.inst, request.block, request.rob, retained
+        )
+        and same_handoff_identity(
+            history.epoch, history.inst, history.block, history.rob, retained
+        )
     )
     kind_mismatch = request.kind != RobEventKind.MICROCOMMIT
     invalid_response = (
@@ -93,15 +114,11 @@ def acknowledge_mpq(response):
     )
     if bad:
         old = diagnostics[1]
-        amount = (
-            old.coalesced_count + 1
-            if old.valid and old.coalesced_count != 65535
-            else 1 if not old.valid else 65535
-        )
+        amount = next_diagnostic_count(old.valid, old.coalesced_count)
         diagnostic_overflow[1] = diagnostic_overflow[1] or old.valid
         diagnostic_dropped[1] = (
-            diagnostic_dropped[1] + 1
-            if old.valid and diagnostic_dropped[1] != 65535
+            increment_saturated_u16(diagnostic_dropped[1])
+            if old.valid
             else diagnostic_dropped[1]
         )
         diagnostics[1] = HandoffDiagnostic(

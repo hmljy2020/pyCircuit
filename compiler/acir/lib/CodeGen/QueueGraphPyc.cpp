@@ -164,7 +164,33 @@ emitTransform(const QueueGraphPlan &plan, const QueueBlockPlan &block,
   };
   for (const QueueExpressionPlan &expression : block.expressions) {
     std::string result;
-    if (expression.kind == "enum_constant") {
+    if (expression.kind == "call") {
+      auto helper = std::find_if(
+          plan.helpers.begin(), plan.helpers.end(),
+          [&](const QueueHelperPlan &candidate) {
+            return candidate.name == expression.field;
+          });
+      if (helper == plan.helpers.end() ||
+          helper->parameterTypes.size() != expression.operands.size())
+        return pycError("helper call is unresolved or malformed");
+      std::vector<std::string> arguments;
+      std::vector<std::string> argumentTypes;
+      for (const std::string &operandName : expression.operands) {
+        auto argument = value(operandName);
+        auto argumentType = valueType(operandName);
+        if (!argument)
+          return argument.takeError();
+        if (!argumentType)
+          return argumentType.takeError();
+        arguments.push_back(std::move(*argument));
+        argumentTypes.push_back(std::move(*argumentType));
+      }
+      auto expanded = emitTransform(plan, helper->body, arguments,
+                                    argumentTypes, 0, nextValue, body);
+      if (!expanded)
+        return expanded.takeError();
+      result = std::move(*expanded);
+    } else if (expression.kind == "enum_constant") {
       result = newValue();
       auto type = pycType(plan, expression.type);
       if (!type)

@@ -543,6 +543,20 @@ emitExpressionBody(const QueueGraphPlan &plan, const QueueBlockPlan &block,
              << "{" << literal.split(" : ").first.str() << "};\n";
       continue;
     }
+    if (expression.kind == "call") {
+      auto type = cppType(expression.type);
+      if (!type)
+        return type.takeError();
+      output << padding << "auto " << expression.result << " = helper_"
+             << identifier(expression.field) << '(';
+      for (auto [index, operandName] : llvm::enumerate(expression.operands)) {
+        if (index)
+          output << ", ";
+        output << operandName;
+      }
+      output << ");\n";
+      continue;
+    }
     if (expression.kind == "slot_get_valid") {
       output << padding << "auto " << expression.result << " = slot_"
              << identifier(expression.slot) << "->valid;\n";
@@ -1193,6 +1207,46 @@ emitExpressionBody(const QueueGraphPlan &plan, const QueueBlockPlan &block,
          << (returnExpression.empty() ? yield : returnExpression).str()
          << ";\n";
   return output.str();
+}
+
+llvm::Error emitHelperFunctions(std::ostream &output,
+                                const QueueGraphPlan &plan) {
+  auto emitSignature = [&](const QueueHelperPlan &helper) -> llvm::Error {
+    auto resultType = cppType(helper.resultType);
+    if (!resultType)
+      return resultType.takeError();
+    output << "static " << *resultType << " helper_" << identifier(helper.name)
+           << '(';
+    for (auto [index, typeName] : llvm::enumerate(helper.parameterTypes)) {
+      auto type = cppType(typeName);
+      if (!type)
+        return type.takeError();
+      if (index)
+        output << ", ";
+      output << *type << ' '
+             << (index == 0 ? std::string("item")
+                            : "item" + std::to_string(index));
+    }
+    output << ')';
+    return llvm::Error::success();
+  };
+  for (const QueueHelperPlan &helper : plan.helpers) {
+    if (auto error = emitSignature(helper))
+      return error;
+    output << ";\n";
+  }
+  if (!plan.helpers.empty())
+    output << '\n';
+  for (const QueueHelperPlan &helper : plan.helpers) {
+    if (auto error = emitSignature(helper))
+      return error;
+    output << " {\n";
+    auto body = emitExpressionBody(plan, helper.body, helper.body.yields.front(), 2);
+    if (!body)
+      return body.takeError();
+    output << *body << "}\n\n";
+  }
+  return llvm::Error::success();
 }
 
 bool referencesTable(const std::vector<QueueExpressionPlan> &expressions,
@@ -1985,6 +2039,8 @@ generateStructuredQueueGraphCpp(const QueueGraphPlan &plan) {
     output << "};\n";
     emitPayloadCodec(output, *payload);
   }
+  if (auto error = emitHelperFunctions(output, plan))
+    return std::move(error);
 
   auto emitStatefulSpecialization =
       [&](const QueueGraphPlan &specialization,
@@ -3244,6 +3300,8 @@ llvm::Expected<std::string> generateQueueGraphCpp(const QueueGraphPlan &plan) {
     output << "};\n";
     emitPayloadCodec(output, *payload);
   }
+  if (auto error = emitHelperFunctions(output, plan))
+    return std::move(error);
 
   for (const TableMatchPlan &match : plan.tableMatches) {
     const TablePlan *table = findTable(plan, match.table);

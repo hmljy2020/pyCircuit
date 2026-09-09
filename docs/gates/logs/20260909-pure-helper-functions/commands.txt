@@ -1,0 +1,13 @@
+/home/lc/.codex/skills/pyc6/scripts/run.sh python -m unittest discover -s tests/python/agentic-circuit/python_frontend -p 'test_*.py'
+/home/lc/.codex/skills/pyc6/scripts/run.sh pytest -q tests/python/agentic-circuit/python_frontend tests/python/agentic-circuit/contracts tests/python/agentic-circuit/cli
+/home/lc/.codex/skills/pyc6/scripts/run.sh cmake --build .pycircuit_out/local-clang22/build --target acir-opt-internal acir-queue-pycgen ACIROpsTests CodeGenTests -j4
+/home/lc/.codex/skills/pyc6/scripts/run.sh python /home/lc/opt/agentic-circuit-toolchain/python-env/bin/lit -sv .pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/Transforms/pure-helpers.mlir .pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/CodeGen/pure-helper-pyc.mlir
+/home/lc/.codex/skills/pyc6/scripts/run.sh .pycircuit_out/local-clang22/build/bin/ACIROpsTests
+/home/lc/.codex/skills/pyc6/scripts/run.sh .pycircuit_out/local-clang22/build/bin/CodeGenTests --gtest_filter='QueueGraphPlanTest.*'
+PYC_DAVINCIOO_CMT_OUT=.pycircuit_out/helper-dev/cmt /home/lc/.codex/skills/pyc6/scripts/run.sh pytest -q designs/davincioo/tests/spe/ooo/test_cmt.py -x
+/home/lc/.codex/skills/pyc6/scripts/run.sh cmake --build .pycircuit_out/local-clang22/build --target check-acir
+/home/lc/.codex/skills/pyc6/scripts/run.sh pre-commit run --files <changed-files>
+/home/lc/.codex/skills/pyc6/scripts/run.sh mkdocs build
+/home/lc/.codex/skills/pyc6/scripts/run.sh python flows/tools/check_decision_status.py --rfc docs/rfcs/pyc6-decisions.md --status docs/gates/decision_status_v6.md --out docs/gates/logs/20260909-pure-helper-functions/decision_status_report.json --require-no-deferred --require-all-verified --require-concrete-evidence --require-existing-evidence
+
+Focused PYC G2 used the same wrapper to run the current-checkout acir-opt rule/freeze pipeline and acir-queue-pycgen, assert that the resulting PYC contained pyc.add and no helper/function call, emit C++ and Verilog with the current-checkout pycc, compile the C++ against libpyc6_runtime, and run a harness expecting input 7 to produce 16.

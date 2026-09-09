@@ -7976,3 +7976,54 @@ understandable component view. Presentation should evolve outside the framework.
 **Source**
 - User review (2026-09-08): prioritize Queue cells, flat Table rows, and dataflow
   animation; separate recording from independently packaged HTML generation.
+
+## Decision 0229: typed pure helpers preserve ordinary calls unless explicitly inlined
+
+**Status:** Accepted; implemented and verified
+
+**Context / Goal**
+DavinciOO CMT repeats pure identity comparisons and saturating diagnostic
+arithmetic across rules. Named payload invariants only return boolean values
+from one nominal struct argument and therefore do not express general typed
+value helpers.
+
+**Decision (strong constraint)**
+- A top-level ordinary Python `def` with one or more explicitly typed value
+  parameters, one explicitly typed result and one pure return expression is a
+  helper when referenced from an Agentic Circuit expression. The target is a
+  statically resolved bare name. Defaults, variadics, dynamic dispatch,
+  recursion, external runtime captures, Queue/module operations, persistent
+  state access and side effects are rejected.
+- `@ac.inline` applies the same helper contract and requires expansion by the
+  Agentic Circuit compiler. It is a marker on the original Python callable,
+  not a new runtime callable and not a C++ `inline` spelling.
+- The frontend emits private typed `func.func` and `func.call` operations with
+  `ac.helper` and `ac.inline` intent. ACIR verifies the complete finite call
+  graph before lowering. Calls to explicitly inline helpers are expanded and
+  those helper definitions are removed before topology freeze.
+- Ordinary helpers remain in QueueGraph plans. gfsim C++ emits typed helper
+  functions and real calls. PYC expands their pure expression bodies because
+  canonical PYC has no software-call execution contract. Both forms preserve
+  combinational value semantics and introduce no state, cycle or rule commit
+  boundary.
+- This first slice supports the existing scalar, enum, nominal record and
+  fixed aggregate value descriptors through one return expression. More
+  general statement bodies or loops require a later decision.
+
+**Required verification**
+- Frontend coverage proves typed positional/keyword calls, nested helpers,
+  explicit inline intent and deterministic diagnostics for malformed or
+  recursive helpers.
+- ACIR tests prove verifier rejection and mandatory inline expansion.
+  QueueGraph tests prove an ordinary helper survives into generated C++, the
+  C++ compiles, PYC contains the expanded computation, and tampered recursive
+  plans fail closed.
+- DavinciOO CMT uses the helpers for repeated handoff identity and saturating
+  diagnostic calculations while retaining its single-module gfsim behavior.
+
+**Verification**
+- `docs/gates/logs/20260909-pure-helper-functions/summary.md`
+
+**Source**
+- User-reviewed FW-0006 implementation plan (2026-09-09).
+- DavinciOO CMT at `designs/davincioo/spe/ooo/cmt.py`.

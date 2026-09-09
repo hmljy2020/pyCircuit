@@ -143,6 +143,13 @@ struct QueueBlockPlan {
   std::string displayName;
 };
 
+struct QueueHelperPlan {
+  std::string name;
+  std::vector<std::string> parameterTypes;
+  std::string resultType;
+  QueueBlockPlan body;
+};
+
 struct MemoryInstancePlan {
   std::string name;
   std::string dataType;
@@ -283,6 +290,7 @@ struct QueueGraphPlan {
   std::vector<QueuePayloadPlan> payloads;
   std::vector<QueueEnumPlan> enums;
   std::vector<QueueAggregatePlan> aggregates;
+  std::vector<QueueHelperPlan> helpers;
   std::vector<std::string> scopes;
   std::vector<QueuePlan> queues;
   std::vector<QueueBlockPlan> blocks;

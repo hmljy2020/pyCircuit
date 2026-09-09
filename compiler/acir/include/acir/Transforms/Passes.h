@@ -22,6 +22,8 @@ std::unique_ptr<mlir::Pass> createLowerProcessStatePass();
 #define GEN_PASS_DECL_LOWERPROCESSSTATEPASS
 #define GEN_PASS_DECL_LOWERVARIABLESTATEPASS
 #define GEN_PASS_DECL_LOWERVALUECONTRACTSPASS
+#define GEN_PASS_DECL_VERIFYPUREHELPERSPASS
+#define GEN_PASS_DECL_INLINEPUREHELPERSPASS
 #define GEN_PASS_DECL_CANONICALIZEMODELPASS
 #define GEN_PASS_DECL_FREEZETOPOLOGYPASS
 #define GEN_PASS_DECL_INFERRULETYPESPASS
@@ -51,6 +53,9 @@ mlir::LogicalResult verifyValueConstraints(mlir::ModuleOp model);
 /// Expand recursive value equality and inline pure value invariants before
 /// dataflow analysis or backend planning.
 mlir::LogicalResult lowerValueContracts(mlir::ModuleOp model);
+
+/// Verify module-level pure helper functions and their finite call graph.
+mlir::LogicalResult verifyPureHelpers(mlir::ModuleOp model);
 
 /// Add the canonical staged rule-to-marker-free-IR pipeline. Topology freeze
 /// remains a separate stage so compiler drivers can preserve stage evidence.

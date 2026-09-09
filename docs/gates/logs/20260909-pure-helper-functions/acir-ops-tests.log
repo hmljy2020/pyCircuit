@@ -1,0 +1,9 @@
+[==========] Running 1844 tests from 4 test suites.
+[----------] 31 tests from ACIROpsTest
+[----------] 31 tests from ACIROpsTest (9215 ms total)
+[----------] 12 tests from ACIRResourcesTest
+[----------] 12 tests from ACIRResourcesTest (5916 ms total)
+[----------] 1800 tests from SmallDomain/SelectorOracleTest
+[----------] 1800 tests from SmallDomain/SelectorOracleTest (6542 ms total)
+[==========] 1844 tests from 4 test suites ran. (21680 ms total)
+[  PASSED  ] 1844 tests.

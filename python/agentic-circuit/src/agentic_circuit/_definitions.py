@@ -147,3 +147,12 @@ def invariant(function: F | None = None, **options: object):
     """Declare one pure typed payload invariant."""
 
     return _decorate("invariant", function, **options)
+
+
+def inline(function: F) -> F:
+    """Mark a pure helper for mandatory compiler inlining."""
+
+    if not callable(function):
+        raise TypeError("ACPY-HELPER-001: @ac.inline requires a function")
+    setattr(function, "__agentic_circuit_inline__", True)
+    return function

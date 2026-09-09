@@ -31,6 +31,30 @@ NDF format 0.2，L2 微架构。条款为本地 draft，尚未完成项目 ID �
 该功能逻辑已通过 [CMT 单模块验收](../../../../../../docs/gates/logs/20260909-cmt-history-loop/summary.md)；源码中的 NDF 注释标记对应本文件的 `doc_id`。
 
 ```python
+@ac.inline
+def increment_saturated_u16(value: ac.u16) -> ac.u16:
+    return value + 1 if value != 65535 else value
+
+
+def next_diagnostic_count(valid: bool, value: ac.u16) -> ac.u16:
+    return increment_saturated_u16(value) if valid else 1
+
+
+def same_handoff_identity(
+    epoch: EpochKey,
+    inst: InstKey,
+    block: BlockKey,
+    rob: RobKey,
+    retained: RobEvent,
+) -> bool:
+    return (
+        epoch == retained.epoch
+        and inst == retained.inst
+        and block == retained.block
+        and rob == retained.rob
+    )
+
+
 # NDF: DOC-DAV-SPE-OOO-CMT-ACKNOWLEDGE-BROB
 @ac.rule
 def acknowledge_brob(response):
@@ -41,11 +65,8 @@ def acknowledge_brob(response):
         or not brob_sent
         or (retained.handoff_required_mask & HANDOFF_OWNER_BROB) == 0
     )
-    identity_mismatch = (
-        response.epoch != retained.epoch
-        or response.inst != retained.inst
-        or response.block != retained.block
-        or response.rob != retained.rob
+    identity_mismatch = not same_handoff_identity(
+        response.epoch, response.inst, response.block, response.rob, retained
     )
     duplicate = busy and not identity_mismatch and brob_done
     invalid_response = not response.valid
@@ -58,15 +79,11 @@ def acknowledge_brob(response):
         or durability_missing
     ):
         old = diagnostics[2]
-        amount = (
-            old.coalesced_count + 1
-            if old.valid and old.coalesced_count != 65535
-            else 1 if not old.valid else 65535
-        )
+        amount = next_diagnostic_count(old.valid, old.coalesced_count)
         diagnostic_overflow[2] = diagnostic_overflow[2] or old.valid
         diagnostic_dropped[2] = (
-            diagnostic_dropped[2] + 1
-            if old.valid and diagnostic_dropped[2] != 65535
+            increment_saturated_u16(diagnostic_dropped[2])
+            if old.valid
             else diagnostic_dropped[2]
         )
         diagnostics[2] = HandoffDiagnostic(

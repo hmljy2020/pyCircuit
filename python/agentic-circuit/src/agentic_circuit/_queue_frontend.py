@@ -777,6 +777,117 @@ class InvariantDefinition:
     expression: ast.expr
 
 
+@dataclass(frozen=True, slots=True)
+class HelperDefinition:
+    function_name: str
+    parameters: tuple[tuple[str, ValueType], ...]
+    result: ValueType
+    expression: ast.expr
+    inline: bool
+
+
+def _helper_definitions(
+    tree: ast.Module,
+    payloads: dict[str, Payload],
+    enums: Mapping[str, ValueType],
+) -> tuple[HelperDefinition, ...]:
+    definitions: list[HelperDefinition] = []
+    reserved = {
+        "system", "module", "rule", "invariant", "struct", "packet",
+        "transaction", "protocol", "interface", "process", "extern_module",
+    }
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        decorator_names = {
+            _decorator_name(item).rsplit(".", 1)[-1]
+            for item in node.decorator_list
+        }
+        if decorator_names & reserved:
+            continue
+        marked_inline = decorator_names == {"inline"}
+        if decorator_names and not marked_inline:
+            continue
+        if (
+            node.args.posonlyargs
+            or node.args.vararg is not None
+            or node.args.kwonlyargs
+            or node.args.kwarg is not None
+            or node.args.defaults
+            or node.args.kw_defaults
+            or not node.args.args
+            or any(argument.annotation is None for argument in node.args.args)
+            or node.returns is None
+        ):
+            if marked_inline:
+                raise QueueFrontendError(
+                    f"ACPY-HELPER-001: helper {node.name!r} requires one or more "
+                    "fully typed parameters, one typed result, and no defaults or "
+                    "variadic arguments"
+                )
+            continue
+        body = list(node.body)
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body.pop(0)
+        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+            if marked_inline:
+                raise QueueFrontendError(
+                    f"ACPY-HELPER-002: helper {node.name!r} requires one pure return expression"
+                )
+            continue
+        parameters = tuple(
+            (argument.arg, _payload(argument.annotation, payloads, enums))
+            for argument in node.args.args
+        )
+        result = _payload(node.returns, payloads, enums)
+        definitions.append(
+            HelperDefinition(
+                node.name, parameters, result, copy.deepcopy(body[0].value), marked_inline
+            )
+        )
+    names = [definition.function_name for definition in definitions]
+    if len(names) != len(set(names)):
+        raise QueueFrontendError("ACPY-HELPER-001: helper names must be unique")
+    by_name = {definition.function_name: definition for definition in definitions}
+    graph: dict[str, tuple[str, ...]] = {}
+    for definition in definitions:
+        shadowed = {name for name, _ in definition.parameters}
+        graph[definition.function_name] = tuple(
+            dict.fromkeys(
+                call.func.id
+                for call in ast.walk(definition.expression)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id not in shadowed
+                and call.func.id in by_name
+            )
+        )
+    active: list[str] = []
+    complete: set[str] = set()
+    def visit(name: str) -> None:
+        if name in active:
+            cycle = active[active.index(name):] + [name]
+            raise QueueFrontendError(
+                "ACPY-HELPER-003: recursive helper call graph: "
+                + " -> ".join(cycle)
+            )
+        if name in complete:
+            return
+        active.append(name)
+        for callee in graph[name]:
+            visit(callee)
+        active.pop()
+        complete.add(name)
+    for name in graph:
+        visit(name)
+    return tuple(definitions)
+
+
 def _resolve_invariant_call(
     call: ast.Call,
     invariants: Mapping[str, InvariantDefinition],
@@ -794,6 +905,7 @@ class QueueProgram:
     enums: tuple[EnumBinding, ...]
     bitfields: tuple[BitfieldBinding, ...]
     invariants: tuple[InvariantDefinition, ...]
+    helpers: tuple[HelperDefinition, ...]
     queues: tuple[QueueBinding, ...]
     effect_rules: tuple[QueueBinding, ...]
     scopes: tuple[ScopeBinding, ...]
@@ -1913,6 +2025,10 @@ def parse_queue_program(
     bitfields = _bitfields(tree)
     bitfield_map = {binding.name: binding.layout for binding in bitfields}
     invariant_definitions = _invariant_definitions(tree, payload_map, bitfield_map)
+    helper_definitions = _helper_definitions(tree, payload_map, enum_map)
+    helpers_by_name = {
+        definition.function_name: definition for definition in helper_definitions
+    }
     rule_definitions: dict[str, RuleDefinition] = {}
 
     def parse_optional_multi_output_rule(
@@ -4907,6 +5023,7 @@ def parse_queue_program(
                     argument,
                     incoming.payload,
                     bitfields=bitfield_map,
+                    helpers=helpers_by_name,
                 ).emit(condition)
                 if not _is_epoch_05_bool_compatible(condition_type):
                     raise QueueFrontendError(
@@ -7570,6 +7687,7 @@ def parse_queue_program(
         enums,
         bitfields,
         tuple(invariant_definitions),
+        tuple(helper_definitions),
         tuple(queues),
         tuple(effect_rules),
         tuple(scopes),
@@ -7634,6 +7752,7 @@ class _ExpressionEmitter:
         table_domains: Mapping[str, tuple[ValueType, int]] | None = None,
         bitfields: Mapping[str, BitfieldLayout] | None = None,
         invariants: Mapping[str, InvariantDefinition] | None = None,
+        helpers: Mapping[str, HelperDefinition] | None = None,
     ) -> None:
         self.payloads = payloads
         self.enum_types: dict[str, EnumType] = {}
@@ -7673,6 +7792,7 @@ class _ExpressionEmitter:
         self.table_domains = dict(table_domains or {})
         self.bitfields = dict(bitfields or {})
         self.invariants = dict(invariants or {})
+        self.helpers = dict(helpers or {})
         self.lines: list[str] = []
         self.index = 0
         self.priority_values: dict[str, tuple[str, ValueType, str, ValueType]] = {}
@@ -7840,6 +7960,7 @@ class _ExpressionEmitter:
                     prefix=predicate_prefix,
                     bitfields=self.bitfields,
                     invariants=self.invariants,
+                    helpers=self.helpers,
                 )
                 predicate, predicate_type = predicate_emitter.emit(
                     invariant.expression, BoolType()
@@ -7867,6 +7988,61 @@ class _ExpressionEmitter:
                     f"    }} : !ac.var<{rendered_payload}> -> !ac.var<i1>"
                 )
                 return self._remember(result, BoolType())
+            helper = (
+                self.helpers.get(node.func.id)
+                if isinstance(node.func, ast.Name)
+                and node.func.id not in lexical_bindings
+                else None
+            )
+            if helper is not None:
+                parameter_names = [name for name, _ in helper.parameters]
+                if len(node.args) > len(parameter_names) or any(
+                    keyword.arg is None for keyword in node.keywords
+                ):
+                    raise QueueFrontendError(
+                        f"ACPY-HELPER-004: malformed call to helper {helper.function_name!r}"
+                    )
+                arguments: dict[str, ast.expr] = {
+                    parameter_names[index]: value
+                    for index, value in enumerate(node.args)
+                }
+                for keyword in node.keywords:
+                    assert keyword.arg is not None
+                    if keyword.arg not in parameter_names or keyword.arg in arguments:
+                        raise QueueFrontendError(
+                            f"ACPY-HELPER-004: invalid or repeated argument "
+                            f"{keyword.arg!r} for helper {helper.function_name!r}"
+                        )
+                    arguments[keyword.arg] = keyword.value
+                missing = [name for name in parameter_names if name not in arguments]
+                if missing:
+                    raise QueueFrontendError(
+                        f"ACPY-HELPER-004: helper {helper.function_name!r} is missing "
+                        + ", ".join(repr(name) for name in missing)
+                    )
+                operands: list[str] = []
+                operand_types: list[ValueType] = []
+                for name, parameter_type in helper.parameters:
+                    operand, operand_type = self.emit(arguments[name], parameter_type)
+                    if not _types_equal_in_epoch_05(operand_type, parameter_type):
+                        raise QueueFrontendError(
+                            f"ACPY-HELPER-004: helper {helper.function_name!r} "
+                            f"argument {name!r} type mismatch"
+                        )
+                    operands.append(operand)
+                    operand_types.append(operand_type)
+                result = self._new()
+                self.lines.append(
+                    f"    %{result} = func.call @{helper.function_name}("
+                    + ", ".join(f"%{operand}" for operand in operands)
+                    + ") : ("
+                    + ", ".join(
+                        f"!ac.var<{_render_type(value_type)}>"
+                        for value_type in operand_types
+                    )
+                    + f") -> !ac.var<{_render_type(helper.result)}>"
+                )
+                return self._remember(result, helper.result)
         if isinstance(node, ast.IfExp):
             condition, condition_type = self.emit(node.test, BoolType())
             if not _is_epoch_05_bool_compatible(condition_type):
@@ -8186,6 +8362,7 @@ class _ExpressionEmitter:
                 slot_views=self.slot_views,
                 bitfields=self.bitfields,
                 invariants=self.invariants,
+                helpers=self.helpers,
             )
             predicate, predicate_type = predicate_emitter.emit(
                 candidate.predicate, BoolType()
@@ -8297,6 +8474,7 @@ class _ExpressionEmitter:
                 slot_views=self.slot_views,
                 bitfields=self.bitfields,
                 invariants=self.invariants,
+                helpers=self.helpers,
             )
             predicate, predicate_type = predicate_emitter.emit(
                 candidate.predicate, BoolType()
@@ -8336,6 +8514,7 @@ class _ExpressionEmitter:
                     prefix=f"{self.prefix}k{self.index}_",
                     bitfields=self.bitfields,
                     invariants=self.invariants,
+                    helpers=self.helpers,
                 )
                 key, key_type = key_emitter.emit(selection.key)
                 if _epoch_05_integer_width(key_type) is None:
@@ -8857,6 +9036,53 @@ class _ExpressionEmitter:
         )
 
 
+def _render_helper_functions(
+    definitions: Collection[HelperDefinition],
+    payloads: Mapping[str, Payload],
+    bitfields: Mapping[str, BitfieldLayout],
+    invariants: Mapping[str, InvariantDefinition],
+) -> list[str]:
+    helpers = {definition.function_name: definition for definition in definitions}
+    lines: list[str] = []
+    for definition in definitions:
+        root_values = {
+            name: (f"arg{index}", value_type)
+            for index, (name, value_type) in enumerate(definition.parameters)
+        }
+        first_name, first_type = definition.parameters[0]
+        emitter = _ExpressionEmitter(
+            dict(payloads),
+            first_name,
+            first_type,
+            root_name="arg0",
+            root_values=root_values,
+            bitfields=bitfields,
+            invariants=invariants,
+            helpers=helpers,
+        )
+        value, value_type = emitter.emit(definition.expression, definition.result)
+        if not _types_equal_in_epoch_05(value_type, definition.result):
+            raise QueueFrontendError(
+                f"ACPY-HELPER-005: helper {definition.function_name!r} result type mismatch"
+            )
+        arguments = ", ".join(
+            f"%arg{index}: !ac.var<{_render_type(value_type)}>"
+            for index, (_, value_type) in enumerate(definition.parameters)
+        )
+        lines.append(
+            f"  func.func private @{definition.function_name}({arguments}) -> "
+            f"!ac.var<{_render_type(definition.result)}> attributes "
+            f"{{ac.helper = true, ac.inline = "
+            f"{'true' if definition.inline else 'false'}}} {{"
+        )
+        lines.extend(emitter.lines)
+        lines.append(
+            f"    return %{value} : !ac.var<{_render_type(definition.result)}>"
+        )
+        lines.append("  }")
+    return lines
+
+
 def lower_queue_program(
     program: QueueProgram, *, module: _ModuleRenderSpec | None = None
 ) -> str:
@@ -8920,6 +9146,7 @@ def lower_queue_program(
     invariants = {
         definition.function_name: definition for definition in program.invariants
     }
+    helpers = {definition.function_name: definition for definition in program.helpers}
     bitfields = {item.name: item.layout for item in program.bitfields}
     if (program.payloads or program.enums or program.bitfields) and module is None:
         lines.append("  ac.type_scope @types {")
@@ -8942,6 +9169,10 @@ def lower_queue_program(
             )
         else:
             lines.append("  }")
+    if module is None:
+        lines.extend(
+            _render_helper_functions(program.helpers, payloads, bitfields, invariants)
+        )
     for instance in sorted(
         program.memory_instances,
         key=lambda value: (value.scope, value.order, value.name),
@@ -9250,6 +9481,7 @@ def lower_queue_program(
                 },
                 bitfields=bitfields,
                 invariants=invariants,
+                helpers=helpers,
             )
             rule_expressions: list[ast.expr] = []
             if queue.expression is not None:
@@ -9366,6 +9598,7 @@ def lower_queue_program(
                     state_views=emitter.state_views,
                     bitfields=bitfields,
                     invariants=invariants,
+                    helpers=helpers,
                 )
                 predicate_emitter.deferred_values.update(find_local_values)
                 predicate, predicate_type = predicate_emitter.emit(
@@ -9411,6 +9644,7 @@ def lower_queue_program(
                         state_views=emitter.state_views,
                         bitfields=bitfields,
                         invariants=invariants,
+                        helpers=helpers,
                     )
                     key_emitter.deferred_values.update(find_local_values)
                     key, key_type = key_emitter.emit(find.key)
@@ -10204,6 +10438,7 @@ def lower_queue_program(
             queue.argument,
             queue.payload,
             bitfields=bitfields,
+            helpers=helpers,
         )
         result, result_type = emitter.emit(queue.expression)
         if not _types_equal_in_epoch_05(result_type, queue.payload):
@@ -10396,6 +10631,7 @@ def lower_queue_program(
                     prefix=f"match_{candidate.order}_",
                     slot_views=slot_views,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 predicate, predicate_type = emitter.emit(
                     candidate.predicate, BoolType()
@@ -10443,6 +10679,7 @@ def lower_queue_program(
                         root_name="entry",
                         prefix=f"choose_{selection.order}_",
                         bitfields=bitfields,
+                        helpers=helpers,
                     )
                     key, key_type = emitter.emit(selection.key)
                     if _epoch_05_integer_width(key_type) is None:
@@ -10535,6 +10772,7 @@ def lower_queue_program(
                     select.argument,
                     control.payload,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 selector, selector_type = emitter.emit(select.selector)
                 if _epoch_05_integer_width(selector_type) is None:
@@ -10576,6 +10814,7 @@ def lower_queue_program(
                     route.argument,
                     incoming.payload,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 selector, selector_type = emitter.emit(route.selector)
                 if route.boolean_selector and not _is_epoch_05_bool_compatible(
@@ -10649,6 +10888,7 @@ def lower_queue_program(
                     feedback.argument,
                     incoming.payload,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 condition, condition_type = emitter.emit(feedback.condition)
                 update, update_type = emitter.emit(feedback.update)
@@ -10692,6 +10932,7 @@ def lower_queue_program(
                     reorder.argument,
                     incoming.payload,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 key, key_type = emitter.emit(reorder.key)
                 if _epoch_05_integer_width(key_type) is None:
@@ -10738,6 +10979,7 @@ def lower_queue_program(
                         dependency.argument,
                         incoming.payload,
                         bitfields=bitfields,
+                        helpers=helpers,
                     )
                     value, value_type = emitter.emit(expression)
                     if _epoch_05_integer_width(value_type) is None:
@@ -10792,6 +11034,7 @@ def lower_queue_program(
                     credit.argument,
                     incoming.payload,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 cost, cost_type = emitter.emit(credit.cost)
                 if _epoch_05_integer_width(cost_type) is None:
@@ -10841,6 +11084,7 @@ def lower_queue_program(
                         memory.argument,
                         incoming.payload,
                         bitfields=bitfields,
+                        helpers=helpers,
                     )
                     value, value_type = emitter.emit(expression)
                     emitted.append((value, value_type, emitter.lines))
@@ -10921,6 +11165,7 @@ def lower_queue_program(
                     selection_values=materialized_selections,
                     table_domains=table_domains,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 address, address_type = address_emitter.emit(read.address)
                 when_emitter = _ExpressionEmitter(
@@ -10935,6 +11180,7 @@ def lower_queue_program(
                     selection_values=materialized_selections,
                     table_domains=table_domains,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 condition, condition_type = when_emitter.emit(read.when, BoolType())
                 if not isinstance(
@@ -10999,6 +11245,7 @@ def lower_queue_program(
                     selection_values=materialized_selections,
                     table_domains=table_domains,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 address, address_type = address_emitter.emit(write.address)
                 enable_emitter = _ExpressionEmitter(
@@ -11012,6 +11259,7 @@ def lower_queue_program(
                     selection_values=materialized_selections,
                     table_domains=table_domains,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 enabled, enable_type = enable_emitter.emit(write.enable, BoolType())
                 value_emitter = _ExpressionEmitter(
@@ -11028,6 +11276,7 @@ def lower_queue_program(
                     selection_values=materialized_selections,
                     table_domains=table_domains,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 if write.value is not None:
                     value, value_type = value_emitter.emit(
@@ -11127,6 +11376,7 @@ def lower_queue_program(
                     selection_values=materialized_selections,
                     table_domains=table_domains,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 mask, mask_type = mask_emitter.emit(
                     ast.Name(id=write.candidates, ctx=ast.Load())
@@ -11143,6 +11393,7 @@ def lower_queue_program(
                     selection_values=materialized_selections,
                     table_domains=table_domains,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 enabled, enable_type = enable_emitter.emit(write.enable, BoolType())
                 value_emitter = _ExpressionEmitter(
@@ -11158,6 +11409,7 @@ def lower_queue_program(
                     selection_values=materialized_selections,
                     table_domains=table_domains,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 if write.value is not None:
                     value, value_type = value_emitter.emit(
@@ -11245,6 +11497,7 @@ def lower_queue_program(
                     selection_values=materialized_selections,
                     table_domains=table_domains,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 condition, condition_type = emitter.emit(release.when, BoolType())
                 if not _is_epoch_05_bool_compatible(condition_type):
@@ -11287,6 +11540,7 @@ def lower_queue_program(
                     expectation.argument,
                     queue.payload,
                     bitfields=bitfields,
+                    helpers=helpers,
                 )
                 condition, condition_type = emitter.emit(expectation.predicate)
                 if not _is_epoch_05_bool_compatible(condition_type):
@@ -11437,6 +11691,14 @@ def _lower_simple_module_source(
     invariants = {
         definition.function_name: definition
         for definition in _invariant_definitions(tree, payload_map, bitfield_map)
+    }
+    helper_definitions = _helper_definitions(
+        tree,
+        payload_map,
+        {binding.name: binding.descriptor for binding in enum_bindings},
+    )
+    helpers = {
+        definition.function_name: definition for definition in helper_definitions
     }
     modules = {
         node.name: node
@@ -12139,6 +12401,11 @@ def _lower_simple_module_source(
             )
         else:
             lines.append("  }")
+    lines.extend(
+        _render_helper_functions(
+            helper_definitions, payload_map, bitfield_map, invariants
+        )
+    )
     lines.append(
         f'  ac.system @{system} root @Top as "root" tick 0 "cycle" '
         'seed {kind = "fixed", value = 0 : i64} instrumentation [] '
@@ -12206,6 +12473,7 @@ def _lower_simple_module_source(
                 root_values=root_values,
                 bitfields=bitfield_map,
                 invariants=invariants,
+                helpers=helpers,
             )
             lines.extend(
                 [
@@ -12285,6 +12553,7 @@ def _lower_simple_module_source(
             input_type,
             bitfields=bitfield_map,
             invariants=invariants,
+            helpers=helpers,
         )
         value, value_type = emitter.emit(expression, output_type)
         if not _types_equal_in_epoch_05(value_type, output_type):

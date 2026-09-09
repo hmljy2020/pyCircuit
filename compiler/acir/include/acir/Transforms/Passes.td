@@ -57,6 +57,16 @@ def LowerValueContractsPass
   let summary = "Lower recursive equality and reusable value invariants";
 }
 
+def VerifyPureHelpersPass
+    : Pass<"ac-verify-pure-helpers", "::mlir::ModuleOp"> {
+  let summary = "Verify pure typed helper functions used by Queue rules";
+}
+
+def InlinePureHelpersPass
+    : Pass<"ac-inline-pure-helpers", "::mlir::ModuleOp"> {
+  let summary = "Inline helper functions carrying the ac.inline marker";
+}
+
 def InferRuleTypesPass : Pass<"ac-infer-rule-types", "::mlir::ModuleOp"> {
   let summary = "Refine transient rule type-constraint markers";
 }

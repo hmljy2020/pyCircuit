@@ -5,6 +5,7 @@
 
 #include "acir/Dialect/ACIR/ACIRDialect.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
@@ -126,6 +127,23 @@ module attributes {ac.contract_epoch = "0.5", ac.model_kind = "queue_graph", ac.
   } {ac.output_names = ["left", "right"]} : !ac.queue<i64> -> (!ac.queue<i64>, !ac.queue<i64>)
   %merged = ac.merge %left, %right policy "round_robin" depth 3 latency 1 {ac.name = "merged"} : (!ac.queue<i64>, !ac.queue<i64>) -> !ac.queue<i64>
   ac.sink %merged {ac.name = "sink_0"} : !ac.queue<i64>
+}
+)mlir";
+
+constexpr llvm::StringLiteral kQueueGraphWithHelper = R"mlir(
+module attributes {ac.contract_epoch = "0.5", ac.model_kind = "queue_graph", ac.queue_graph_domain = "cycle", ac.system = "helper_pipeline"} {
+  func.func private @plus_one(%arg0: !ac.var<i8>) -> !ac.var<i8> attributes {ac.helper = true, ac.inline = false} {
+    %one = ac.var.constant 1 : i8 as !ac.var<i8>
+    %result = ac.var.add %arg0, %one : !ac.var<i8>
+    return %result : !ac.var<i8>
+  }
+  %input = ac.source depth 1 latency 1 {ac.name = "input"} : !ac.queue<i8>
+  %output = ac.transform %input depths [1] latencies [1] {
+  ^body(%item: !ac.var<i8>):
+    %result = func.call @plus_one(%item) : (!ac.var<i8>) -> !ac.var<i8>
+    ac.transform.yield %result : !ac.var<i8>
+  } {ac.name = "output"} : (!ac.queue<i8>) -> !ac.queue<i8>
+  ac.sink %output {ac.name = "sink_0"} : !ac.queue<i8>
 }
 )mlir";
 
@@ -537,6 +555,48 @@ TEST(QueueGraphPlanTest, ExtractsFrozenQueueIdentitiesAndTopology) {
   EXPECT_EQ(plan->blocks[2].kind, "merge");
   EXPECT_EQ(plan->blocks[3].kind, "sink");
   EXPECT_EQ(plan->blocks[2].policy, "round_robin");
+}
+
+TEST(QueueGraphPlanTest, PreservesHelpersForCppAndExpandsThemForPyc) {
+  mlir::MLIRContext context;
+  context.loadDialect<ac::ACIRDialect, mlir::DLTIDialect,
+                      mlir::func::FuncDialect>();
+  auto module =
+      mlir::parseSourceString<mlir::ModuleOp>(kQueueGraphWithHelper, &context);
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(acir::verifyPureHelpers(*module)));
+  ASSERT_TRUE(freezeQueueGraph(*module));
+  auto plan = buildQueueGraphPlan(*module);
+  ASSERT_TRUE(bool(plan)) << llvm::toString(plan.takeError());
+  ASSERT_EQ(plan->helpers.size(), 1u);
+  EXPECT_EQ(plan->helpers.front().name, "plus_one");
+  ASSERT_EQ(plan->blocks.size(), 3u);
+  ASSERT_EQ(plan->blocks[1].expressions.size(), 1u);
+  EXPECT_EQ(plan->blocks[1].expressions.front().kind, "call");
+
+  auto cpp = generateQueueGraphCpp(*plan);
+  ASSERT_TRUE(bool(cpp)) << llvm::toString(cpp.takeError());
+  EXPECT_NE(cpp->find("helper_plus_one"), std::string::npos);
+  expectCppCompiles(*cpp);
+
+  auto pyc = generateQueueGraphPyc(*plan);
+  ASSERT_TRUE(bool(pyc)) << llvm::toString(pyc.takeError());
+  EXPECT_EQ(pyc->find("func.call"), std::string::npos);
+  EXPECT_NE(pyc->find("pyc.add"), std::string::npos);
+
+  QueueExpressionPlan recursive;
+  recursive.result = "recursive";
+  recursive.kind = "call";
+  recursive.type = "i8";
+  recursive.operands = {"item"};
+  recursive.field = "plus_one";
+  plan->helpers.front().body.expressions = {recursive};
+  plan->helpers.front().body.yields = {"recursive"};
+  auto recursiveError = verifyQueueGraphPlan(*plan);
+  ASSERT_TRUE(bool(recursiveError));
+  EXPECT_NE(llvm::toString(std::move(recursiveError)).find(
+                "helper call graph must be acyclic"),
+            std::string::npos);
 }
 
 TEST(QueueGraphPlanTest, RejectsRawUnfrozenQueueGraph) {

@@ -37,6 +37,15 @@ CMT 不维护当前 recovery epoch，已发布的旧 epoch 事务仍可受理；
 该功能逻辑已通过 [CMT 单模块验收](../../../../../../docs/gates/logs/20260909-fw-0005/summary.md)；源码中的 NDF 注释标记对应本文件的 `doc_id`。
 
 ```python
+@ac.inline
+def increment_saturated_u16(value: ac.u16) -> ac.u16:
+    return value + 1 if value != 65535 else value
+
+
+def next_diagnostic_count(valid: bool, value: ac.u16) -> ac.u16:
+    return increment_saturated_u16(value) if valid else 1
+
+
 # NDF: DOC-DAV-SPE-OOO-CMT-ACCEPT
 @ac.rule
 def accept(request, core_id, pe_id, stid, launch_generation):
@@ -62,15 +71,11 @@ def accept(request, core_id, pe_id, stid, launch_generation):
     if not busy or bad:
         if bad:
             old = diagnostics[0]
-            amount = (
-                old.coalesced_count + 1
-                if old.valid and old.coalesced_count != 65535
-                else 1 if not old.valid else 65535
-            )
+            amount = next_diagnostic_count(old.valid, old.coalesced_count)
             diagnostic_overflow[0] = diagnostic_overflow[0] or old.valid
             diagnostic_dropped[0] = (
-                diagnostic_dropped[0] + 1
-                if old.valid and diagnostic_dropped[0] != 65535
+                increment_saturated_u16(diagnostic_dropped[0])
+                if old.valid
                 else diagnostic_dropped[0]
             )
             diagnostics[0] = HandoffDiagnostic(

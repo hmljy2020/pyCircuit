@@ -6,15 +6,43 @@ import agentic_circuit as ac
 from designs.davincioo.contracts.spe import (
     HANDOFF_OWNER_BROB,
     HANDOFF_OWNER_MPQ,
+    BlockKey,
     BrobHandoffAck,
+    EpochKey,
     FlowKey,
     HandoffDiagnostic,
+    InstKey,
     MpqHandoffAck,
     RobEvent,
     RobEventKind,
     RobHandoff,
+    RobKey,
     ScalarRenameHistory,
 )
+
+
+@ac.inline
+def increment_saturated_u16(value: ac.u16) -> ac.u16:
+    return value + 1 if value != 65535 else value
+
+
+def next_diagnostic_count(valid: bool, value: ac.u16) -> ac.u16:
+    return increment_saturated_u16(value) if valid else 1
+
+
+def same_handoff_identity(
+    epoch: EpochKey,
+    inst: InstKey,
+    block: BlockKey,
+    rob: RobKey,
+    retained: RobEvent,
+) -> bool:
+    return (
+        epoch == retained.epoch
+        and inst == retained.inst
+        and block == retained.block
+        and rob == retained.rob
+    )
 
 
 @ac.module
@@ -110,10 +138,9 @@ def cmt(
             histories,
             where=lambda row: (
                 row.valid
-                and row.epoch == retained.epoch
-                and row.inst == retained.inst
-                and row.block == retained.block
-                and row.rob == retained.rob
+                and same_handoff_identity(
+                    row.epoch, row.inst, row.block, row.rob, retained
+                )
                 and row.history_sequence == history.history_sequence
             ),
         )
@@ -122,15 +149,13 @@ def cmt(
             or not mpq_sent
             or (retained.handoff_required_mask & HANDOFF_OWNER_MPQ) == 0
         )
-        identity_mismatch = (
-            request.epoch != retained.epoch
-            or request.inst != retained.inst
-            or request.block != retained.block
-            or request.rob != retained.rob
-            or history.epoch != retained.epoch
-            or history.inst != retained.inst
-            or history.block != retained.block
-            or history.rob != retained.rob
+        identity_mismatch = not (
+            same_handoff_identity(
+                request.epoch, request.inst, request.block, request.rob, retained
+            )
+            and same_handoff_identity(
+                history.epoch, history.inst, history.block, history.rob, retained
+            )
         )
         kind_mismatch = request.kind != RobEventKind.MICROCOMMIT
         invalid_response = (
@@ -159,15 +184,11 @@ def cmt(
         )
         if bad:
             old = diagnostics[1]
-            amount = (
-                old.coalesced_count + 1
-                if old.valid and old.coalesced_count != 65535
-                else 1 if not old.valid else 65535
-            )
+            amount = next_diagnostic_count(old.valid, old.coalesced_count)
             diagnostic_overflow[1] = diagnostic_overflow[1] or old.valid
             diagnostic_dropped[1] = (
-                diagnostic_dropped[1] + 1
-                if old.valid and diagnostic_dropped[1] != 65535
+                increment_saturated_u16(diagnostic_dropped[1])
+                if old.valid
                 else diagnostic_dropped[1]
             )
             diagnostics[1] = HandoffDiagnostic(
@@ -201,11 +222,8 @@ def cmt(
             or not brob_sent
             or (retained.handoff_required_mask & HANDOFF_OWNER_BROB) == 0
         )
-        identity_mismatch = (
-            response.epoch != retained.epoch
-            or response.inst != retained.inst
-            or response.block != retained.block
-            or response.rob != retained.rob
+        identity_mismatch = not same_handoff_identity(
+            response.epoch, response.inst, response.block, response.rob, retained
         )
         duplicate = busy and not identity_mismatch and brob_done
         invalid_response = not response.valid
@@ -218,15 +236,11 @@ def cmt(
             or durability_missing
         ):
             old = diagnostics[2]
-            amount = (
-                old.coalesced_count + 1
-                if old.valid and old.coalesced_count != 65535
-                else 1 if not old.valid else 65535
-            )
+            amount = next_diagnostic_count(old.valid, old.coalesced_count)
             diagnostic_overflow[2] = diagnostic_overflow[2] or old.valid
             diagnostic_dropped[2] = (
-                diagnostic_dropped[2] + 1
-                if old.valid and diagnostic_dropped[2] != 65535
+                increment_saturated_u16(diagnostic_dropped[2])
+                if old.valid
                 else diagnostic_dropped[2]
             )
             diagnostics[2] = HandoffDiagnostic(
@@ -274,15 +288,11 @@ def cmt(
         if not busy or bad:
             if bad:
                 old = diagnostics[0]
-                amount = (
-                    old.coalesced_count + 1
-                    if old.valid and old.coalesced_count != 65535
-                    else 1 if not old.valid else 65535
-                )
+                amount = next_diagnostic_count(old.valid, old.coalesced_count)
                 diagnostic_overflow[0] = diagnostic_overflow[0] or old.valid
                 diagnostic_dropped[0] = (
-                    diagnostic_dropped[0] + 1
-                    if old.valid and diagnostic_dropped[0] != 65535
+                    increment_saturated_u16(diagnostic_dropped[0])
+                    if old.valid
                     else diagnostic_dropped[0]
                 )
                 diagnostics[0] = HandoffDiagnostic(

@@ -323,7 +323,7 @@ Queue/module、使用反射或捕获外部 runtime value。它可以调用同一
 另一个 invariant，但参数必须精确匹配 callee 的 nominal type，且 invariant call graph
 必须有限、无环。调用目标必须是静态解析且未被 lexical parameter/local 遮蔽的裸
 invariant 名；同名 lexical binding 优先。attribute/receiver 调用属于 dynamic dispatch，
-不会被重解释为 invariant。任意普通函数调用仍然非法。稳定诊断名为
+不会被重解释为 invariant。invariant 不能调用普通 helper。稳定诊断名为
 `<Payload>.<function>`。
 framework intrinsic 必须使用 canonical、未重命名的 bare import，或使用 `ac.matches`
 这类显式 Agentic Circuit module alias；重命名的 bare intrinsic import 非法。
@@ -335,6 +335,32 @@ guard 或分类。`ac-lower-value-contracts` 先内联 leaf callee，再内联 c
 顺序把 aggregate `ac.var.cmp` 递归展开为 `ac.var.get`/`ac.var.element`、scalar/enum 相等
 leaf 和平衡 boolean AND tree；`ne` 对完整 equality result 取反。Frozen ACIR 与
 QueueGraph 中禁止残留 aggregate comparison 或 invariant op。
+
+### Typed 纯 helper 函数
+
+顶层 typed `def` 可以提取重复的组合值计算：
+
+```python
+def same_identity(epoch: EpochKey, inst: InstKey, event: Event) -> bool:
+    return epoch == event.epoch and inst == event.inst
+
+@ac.inline
+def saturating_increment(value: ac.u16) -> ac.u16:
+    return value + 1 if value != 65535 else value
+```
+
+首期要求至少一个参数、所有参数和返回值都有明确类型，并且除可选 docstring 外只有
+一个 pure return expression。调用可使用位置参数或命名参数，也可以调用同一 source
+closure 中的其他 helper；callee 必须是未被 lexical binding 遮蔽且静态解析的裸名，
+调用图必须有限、无环。默认参数、positional-only/keyword-only 参数、variadic、动态
+调用、外部 runtime capture、持久状态访问、Queue/module 操作、修改和其他副作用非法。
+statement body 和循环不在首期范围内。
+
+前端生成标记 `ac.helper` 的 private typed `func.func` 及 typed `func.call`。
+`@ac.inline` 额外标记 `ac.inline`，ACIR pipeline 必须在 topology freeze 前展开全部调用
+并删除该定义。普通 helper 保留在 QueueGraph plan 中，gfsim C++ 生成 typed helper
+函数和真实调用；PYC 在每个调用点展开同一个表达式。两种形式都不增加状态、周期、
+Queue 边界或 rule 提交边界；下游 C++ 优化器仍可自行内联普通 helper。
 
 ### 静态 bits 与命名 bitfield view
 

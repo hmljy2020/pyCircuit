@@ -1,0 +1,38 @@
+[1/11] Linking CXX executable bin/acir-opcode-catalog
+[2/11] Linking CXX executable bin/acir-cxxgen
+[3/11] Linking CXX executable bin/acir-queue-cxxgen
+[4/11] Linking CXX executable bin/acir-queue-plan
+[5/11] Linking CXX executable bin/acir-opt
+[6/11] Building CXX object compiler/acir/lib/Compiler/CMakeFiles/ACIRCompiler.dir/Driver.cpp.o
+[7/11] Linking CXX static library compiler/acir/lib/Compiler/libACIRCompiler.a
+[8/11] Building CXX object compiler/acir/tools/acir-build/CMakeFiles/acir-build.dir/acir-build.cpp.o
+[9/11] Linking CXX executable bin/acir-build
+[10/11] Linking CXX shared module compiler/acir/python/agentic_circuit/_native.so
+[10/11] Running Agentic Circuit lit tests
+-- Testing: 199 tests, 192 workers --
+
+/home/lc/opt/gcc14/bin/aarch64-conda-linux-gnu-ld: /home/lc/pyCircuit/simulator/gfsim/trace.cpp:400:(.text+0x7da4): undefined reference to `llvm::json::Object::get(llvm::StringRef) const'
+/home/lc/opt/gcc14/bin/aarch64-conda-linux-gnu-ld: /home/lc/pyCircuit/simulator/gfsim/trace.cpp:408:(.text+0x8078): undefined reference to `llvm::json::Object::get(llvm::StringRef) const'
+/home/lc/opt/gcc14/bin/aarch64-conda-linux-gnu-ld: /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/gfsim/libgfsim.a(trace.cpp.o):/home/lc/pyCircuit/simulator/gfsim/trace.cpp:410: more undefined references to `llvm::json::Object::get(llvm::StringRef) const' follow
+/home/lc/opt/gcc14/bin/aarch64-conda-linux-gnu-ld: /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/gfsim/libgfsim.a(trace.cpp.o):(.data+0x0): undefined reference to `llvm::DisableABIBreakingChecks'
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)
+acir-build: host compile failed:
+
+--
+
+********************
+Testing:  0.. 10.. 20.. 30.. 40.. 50.. 60.. 70.. 80.. 90..
+********************
+Failed Tests (1):
+  AgenticCircuit :: CodeGen/emit-cxx-current.mlir
+
+
+Testing Time: 16.35s
+
+Total Discovered Tests: 199
+  Unsupported:   2 (1.01%)
+  Passed     : 196 (98.49%)
+  Failed     :   1 (0.50%)
+FAILED: [code=1] compiler/acir/tests/mlir/CMakeFiles/check-acir /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir/CMakeFiles/check-acir
+cd /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir && /home/lc/opt/agentic-circuit-toolchain/python-env/bin/python /home/lc/opt/agentic-circuit-toolchain/python-env/bin/lit -sv /home/lc/pyCircuit/.pycircuit_out/local-clang22/build/compiler/acir/tests/mlir
+ninja: build stopped: subcommand failed.

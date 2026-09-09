@@ -19,6 +19,7 @@
       "negative_mlir": [],
       "positive_mlir": [
         "tests/mlir/agentic-circuit/CodeGen/atomic-transform.mlir",
+        "tests/mlir/agentic-circuit/CodeGen/pure-helper-pyc.mlir",
         "tests/mlir/agentic-circuit/Transforms/rule-multi-input-lowering.mlir"
       ],
       "python_producer": [
@@ -33,6 +34,7 @@
         "tests/cpp/agentic-circuit/CodeGen/QueueGraphPlanTest.cpp",
         "tests/integration/agentic-circuit/e2e/test_pyc_backend.py",
         "tests/mlir/agentic-circuit/CodeGen/atomic-transform.mlir",
+        "tests/mlir/agentic-circuit/CodeGen/pure-helper-pyc.mlir",
         "tests/mlir/agentic-circuit/Transforms/rule-multi-input-lowering.mlir",
         "tests/python/agentic-circuit/contracts/test_contracts.py",
         "tests/unit/test_pyc6_surface.py",
@@ -460,7 +462,8 @@
       "name": "pyc.constant",
       "negative_mlir": [],
       "positive_mlir": [
-        "tests/mlir/agentic-circuit/CodeGen/masked-match.mlir"
+        "tests/mlir/agentic-circuit/CodeGen/masked-match.mlir",
+        "tests/mlir/agentic-circuit/CodeGen/pure-helper-pyc.mlir"
       ],
       "python_producer": [
         "python/pycircuit/src/pycircuit/dsl.py"
@@ -474,6 +477,7 @@
         "tests/cpp/agentic-circuit/CodeGen/QueueGraphPlanTest.cpp",
         "tests/integration/agentic-circuit/e2e/test_pyc_backend.py",
         "tests/mlir/agentic-circuit/CodeGen/masked-match.mlir",
+        "tests/mlir/agentic-circuit/CodeGen/pure-helper-pyc.mlir",
         "tests/python/agentic-circuit/contracts/test_contracts.py",
         "tests/test_pyc_canonical_ops.py",
         "tests/test_pyc_enum.py"

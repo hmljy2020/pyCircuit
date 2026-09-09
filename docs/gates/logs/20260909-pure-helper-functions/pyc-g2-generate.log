@@ -1,0 +1,15 @@
+    %v6 = pyc.add %v4, %v5 : i8, i8 -> i8
+    %v8 = pyc.add %v4, %v7 : i8, i8 -> i8
+    %v9 = pyc.add %v6, %v8 : i8, i8 -> i8
+stats: regs=0 (0 bits), mems=0 (0 bits), max_depth=2/32, WNS=30, TNS=0, fuse_comb=on
+stats: regs=0 (0 bits), mems=0 (0 bits), max_depth=2/32, WNS=30, TNS=0, fuse_comb=on
+.pycircuit_out/helper-dev/g2/cpp/compile_stats.json
+.pycircuit_out/helper-dev/g2/cpp/cpp_compile_manifest.json
+.pycircuit_out/helper-dev/g2/cpp/helper_pipeline.cpp
+.pycircuit_out/helper-dev/g2/cpp/helper_pipeline.hpp
+.pycircuit_out/helper-dev/g2/cpp/manifest.json
+.pycircuit_out/helper-dev/g2/frozen.mlir
+.pycircuit_out/helper-dev/g2/model.pyc
+.pycircuit_out/helper-dev/g2/model.sv
+.pycircuit_out/helper-dev/g2/model.sv.stats.json
+.pycircuit_out/helper-dev/g2/raw.mlir

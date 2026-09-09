@@ -16,6 +16,7 @@ PUBLIC = {
     "process",
     "rule",
     "invariant",
+    "inline",
     "scope",
     "array",
     "map",

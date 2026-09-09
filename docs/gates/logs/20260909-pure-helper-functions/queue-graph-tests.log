@@ -1,0 +1,164 @@
+Running main() from /tmp/agentic-circuit-googletest/googletest/src/gtest_main.cc
+Note: Google Test filter = QueueGraphPlanTest.*
+[==========] Running 76 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 76 tests from QueueGraphPlanTest
+[ RUN      ] QueueGraphPlanTest.ExtractsFrozenQueueIdentitiesAndTopology
+[       OK ] QueueGraphPlanTest.ExtractsFrozenQueueIdentitiesAndTopology (5 ms)
+[ RUN      ] QueueGraphPlanTest.PreservesHelpersForCppAndExpandsThemForPyc
+[       OK ] QueueGraphPlanTest.PreservesHelpersForCppAndExpandsThemForPyc (1656 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsRawUnfrozenQueueGraph
+loc("-":2:1): error: malformed flat QueueGraph freeze evidence
+[       OK ] QueueGraphPlanTest.RejectsRawUnfrozenQueueGraph (2 ms)
+[ RUN      ] QueueGraphPlanTest.CanonicalJsonIsByteIdenticalAndClosed
+[       OK ] QueueGraphPlanTest.CanonicalJsonIsByteIdenticalAndClosed (14 ms)
+[ RUN      ] QueueGraphPlanTest.PreservesJitSpecializationIdentity
+[       OK ] QueueGraphPlanTest.PreservesJitSpecializationIdentity (10 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsRecursiveNestedPayloadDefinitions
+[       OK ] QueueGraphPlanTest.RejectsRecursiveNestedPayloadDefinitions (4 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsMalformedNominalEnumMetadata
+[       OK ] QueueGraphPlanTest.RejectsMalformedNominalEnumMetadata (3 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsTupleAggregateWidthMismatch
+[       OK ] QueueGraphPlanTest.RejectsTupleAggregateWidthMismatch (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsMalformedValueArrayMetadata
+[       OK ] QueueGraphPlanTest.RejectsMalformedValueArrayMetadata (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsAggregateMetadataWiderThanSixtyFourBits
+[       OK ] QueueGraphPlanTest.RejectsAggregateMetadataWiderThanSixtyFourBits (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsAggregateBitWidthArithmeticOverflow
+[       OK ] QueueGraphPlanTest.RejectsAggregateBitWidthArithmeticOverflow (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsPayloadFieldWidthMismatch
+[       OK ] QueueGraphPlanTest.RejectsPayloadFieldWidthMismatch (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsAggregateCreateOperandTypeOrArityForgery
+[       OK ] QueueGraphPlanTest.RejectsAggregateCreateOperandTypeOrArityForgery (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsAggregateGetCrossElementSliceForgery
+[       OK ] QueueGraphPlanTest.RejectsAggregateGetCrossElementSliceForgery (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsResidualAggregateComparisonBeforeCodegen
+[       OK ] QueueGraphPlanTest.RejectsResidualAggregateComparisonBeforeCodegen (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsResidualInvariantBeforeCodegen
+[       OK ] QueueGraphPlanTest.RejectsResidualInvariantBeforeCodegen (0 ms)
+[ RUN      ] QueueGraphPlanTest.VerifiesNestedTableMatchCaptureTypes
+[       OK ] QueueGraphPlanTest.VerifiesNestedTableMatchCaptureTypes (0 ms)
+[ RUN      ] QueueGraphPlanTest.PreservesExactU64MaskedMatchAndRejectsForgedMetadata
+[       OK ] QueueGraphPlanTest.PreservesExactU64MaskedMatchAndRejectsForgedMetadata (3601 ms)
+[ RUN      ] QueueGraphPlanTest.PreservesReusableModuleSpecializationAndRunsIndependentInstances
+[       OK ] QueueGraphPlanTest.PreservesReusableModuleSpecializationAndRunsIndependentInstances (2112 ms)
+[ RUN      ] QueueGraphPlanTest.ReusesStatefulModuleImplementationWithIndependentPersistentState
+[       OK ] QueueGraphPlanTest.ReusesStatefulModuleImplementationWithIndependentPersistentState (2870 ms)
+[ RUN      ] QueueGraphPlanTest.ReusesMultiRuleModuleAndPreservesOwnerLocalLexicalArbitration
+[       OK ] QueueGraphPlanTest.ReusesMultiRuleModuleAndPreservesOwnerLocalLexicalArbitration (3290 ms)
+[ RUN      ] QueueGraphPlanTest.ReusesMultiOwnerModuleWithAtomicIndependentInstanceState
+[       OK ] QueueGraphPlanTest.ReusesMultiOwnerModuleWithAtomicIndependentInstanceState (3212 ms)
+[ RUN      ] QueueGraphPlanTest.StructuredGeneratorPreservesOrderedRepeatedWritesPerOwner
+[       OK ] QueueGraphPlanTest.StructuredGeneratorPreservesOrderedRepeatedWritesPerOwner (2247 ms)
+[ RUN      ] QueueGraphPlanTest.ReusesCombinedMultiRuleMultiOwnerModuleWithAtomicArbitration
+[       OK ] QueueGraphPlanTest.ReusesCombinedMultiRuleMultiOwnerModuleWithAtomicArbitration (3276 ms)
+[ RUN      ] QueueGraphPlanTest.PreservesNestedSpecializationReuseWithoutFlatteningChildBodies
+[       OK ] QueueGraphPlanTest.PreservesNestedSpecializationReuseWithoutFlatteningChildBodies (2078 ms)
+[ RUN      ] QueueGraphPlanTest.OwnsInternalQueuesPerMixedNestedSpecializationInstance
+[       OK ] QueueGraphPlanTest.OwnsInternalQueuesPerMixedNestedSpecializationInstance (2093 ms)
+[ RUN      ] QueueGraphPlanTest.PreservesQueueRateAndRejectsUnspecializedPycLanes
+[       OK ] QueueGraphPlanTest.PreservesQueueRateAndRejectsUnspecializedPycLanes (10 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsLegacyContractEpochBeforePlanning
+[       OK ] QueueGraphPlanTest.RejectsLegacyContractEpochBeforePlanning (1 ms)
+[ RUN      ] QueueGraphPlanTest.ExtractsPayloadAndImmutableVarDag
+[       OK ] QueueGraphPlanTest.ExtractsPayloadAndImmutableVarDag (3 ms)
+[ RUN      ] QueueGraphPlanTest.NativeGeneratorConsumesOnlyExtractedPlan
+[       OK ] QueueGraphPlanTest.NativeGeneratorConsumesOnlyExtractedPlan (3 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsCanonicalScalarQueuePyc
+[       OK ] QueueGraphPlanTest.EmitsCanonicalScalarQueuePyc (0 ms)
+[ RUN      ] QueueGraphPlanTest.LowersUnsignedAcirShrToCanonicalPycLshr
+[       OK ] QueueGraphPlanTest.LowersUnsignedAcirShrToCanonicalPycLshr (0 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsAtomicTransformWithIndependentArity
+[       OK ] QueueGraphPlanTest.EmitsAtomicTransformWithIndependentArity (0 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsStatelessHeterogeneousOptionalMultiOutputTransition
+[       OK ] QueueGraphPlanTest.EmitsStatelessHeterogeneousOptionalMultiOutputTransition (1856 ms)
+[ RUN      ] QueueGraphPlanTest.CompilesSevenOptionalOutputsPlusMandatoryAck
+[       OK ] QueueGraphPlanTest.CompilesSevenOptionalOutputsPlusMandatoryAck (2319 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsNoncanonicalOutputPresenceOrdinalOrder
+[       OK ] QueueGraphPlanTest.RejectsNoncanonicalOutputPresenceOrdinalOrder (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsDuplicateOutputPresenceOrdinal
+[       OK ] QueueGraphPlanTest.RejectsDuplicateOutputPresenceOrdinal (0 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsHeterogeneousBarrierForBothBackends
+[       OK ] QueueGraphPlanTest.EmitsHeterogeneousBarrierForBothBackends (0 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsStaticQueueCollectionSelectForBothBackends
+[       OK ] QueueGraphPlanTest.EmitsStaticQueueCollectionSelectForBothBackends (0 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsTypedReorderForBothBackends
+[       OK ] QueueGraphPlanTest.EmitsTypedReorderForBothBackends (0 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsTypedDependencyForBothBackends
+[       OK ] QueueGraphPlanTest.EmitsTypedDependencyForBothBackends (1 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsTypedCreditWindowForBothBackends
+[       OK ] QueueGraphPlanTest.EmitsTypedCreditWindowForBothBackends (0 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsOldDataMemoryForBothBackends
+[       OK ] QueueGraphPlanTest.EmitsOldDataMemoryForBothBackends (1719 ms)
+[ RUN      ] QueueGraphPlanTest.NativeTableKeyConvertsExactWidthValue
+[       OK ] QueueGraphPlanTest.NativeTableKeyConvertsExactWidthValue (1888 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsQueuePredicateAsPycComparison
+[       OK ] QueueGraphPlanTest.EmitsQueuePredicateAsPycComparison (20 ms)
+[ RUN      ] QueueGraphPlanTest.EmitsOneReadyValidStagePerQueueLatency
+[       OK ] QueueGraphPlanTest.EmitsOneReadyValidStagePerQueueLatency (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsImplicitMultipleConsumers
+[       OK ] QueueGraphPlanTest.RejectsImplicitMultipleConsumers (1 ms)
+[ RUN      ] QueueGraphPlanTest.FlatGeneratorPreservesOrderedRepeatedWritesPerOwner
+[       OK ] QueueGraphPlanTest.FlatGeneratorPreservesOrderedRepeatedWritesPerOwner (2215 ms)
+[ RUN      ] QueueGraphPlanTest.BorrowsAggregateTableReadsAndMaterializesOutputsBeforeCommit
+[       OK ] QueueGraphPlanTest.BorrowsAggregateTableReadsAndMaterializesOutputsBeforeCommit (2855 ms)
+[ RUN      ] QueueGraphPlanTest.BorrowsCheckedAggregateReadsWithoutDroppingChecks
+[       OK ] QueueGraphPlanTest.BorrowsCheckedAggregateReadsWithoutDroppingChecks (2179 ms)
+[ RUN      ] QueueGraphPlanTest.OwnerWriteExclusionProofUsesBoundedSharedDagKeys
+[       OK ] QueueGraphPlanTest.OwnerWriteExclusionProofUsesBoundedSharedDagKeys (8 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsOutOfRangeConstantTableFiringPlan
+[       OK ] QueueGraphPlanTest.RejectsOutOfRangeConstantTableFiringPlan (4 ms)
+[ RUN      ] QueueGraphPlanTest.RecomputesBoundedFiringIndexConstraints
+[       OK ] QueueGraphPlanTest.RecomputesBoundedFiringIndexConstraints (2332 ms)
+[ RUN      ] QueueGraphPlanTest.RecomputesTableEndpointAndObservationConstraints
+[       OK ] QueueGraphPlanTest.RecomputesTableEndpointAndObservationConstraints (7 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsTableFiringPlanTypeAndOwnershipBypasses
+[       OK ] QueueGraphPlanTest.RejectsTableFiringPlanTypeAndOwnershipBypasses (5 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsForgedFrozenFiringBeforePlanExtraction
+loc("-":5:13): error: 'ac.firing' op legacy firing summary attribute 'handshake' is not part of canonical ACIR
+[       OK ] QueueGraphPlanTest.RejectsForgedFrozenFiringBeforePlanExtraction (3 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsInvalidSharedTableReferenceTargets
+[       OK ] QueueGraphPlanTest.RejectsInvalidSharedTableReferenceTargets (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsInvalidSharedTableReferenceProvenance
+[       OK ] QueueGraphPlanTest.RejectsInvalidSharedTableReferenceProvenance (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsInvalidSharedTableReferenceFieldTypes
+[       OK ] QueueGraphPlanTest.RejectsInvalidSharedTableReferenceFieldTypes (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsInvalidSharedTableWidths
+[       OK ] QueueGraphPlanTest.RejectsInvalidSharedTableWidths (0 ms)
+[ RUN      ] QueueGraphPlanTest.FirstTableChooseUsesSharedScalarPriorityEncoder
+[       OK ] QueueGraphPlanTest.FirstTableChooseUsesSharedScalarPriorityEncoder (10493 ms)
+[ RUN      ] QueueGraphPlanTest.FusesPureSameSnapshotMatchesAndSharesPredicateDag
+[       OK ] QueueGraphPlanTest.FusesPureSameSnapshotMatchesAndSharesPredicateDag (14552 ms)
+[ RUN      ] QueueGraphPlanTest.KeyedTableChooseRetainsSelectionLoop
+[       OK ] QueueGraphPlanTest.KeyedTableChooseRetainsSelectionLoop (3 ms)
+[ RUN      ] QueueGraphPlanTest.VerifiesInlineTableChooseProvenanceAndPairs
+[       OK ] QueueGraphPlanTest.VerifiesInlineTableChooseProvenanceAndPairs (1 ms)
+[ RUN      ] QueueGraphPlanTest.DuplicateKeyedChoicesKeepIndependentSnapshotEffects
+[       OK ] QueueGraphPlanTest.DuplicateKeyedChoicesKeepIndependentSnapshotEffects (2205 ms)
+[ RUN      ] QueueGraphPlanTest.DistinctKeyMetadataGeneratesIndependentScans
+[       OK ] QueueGraphPlanTest.DistinctKeyMetadataGeneratesIndependentScans (1964 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsMalformedPriorityExpressionPlan
+[       OK ] QueueGraphPlanTest.RejectsMalformedPriorityExpressionPlan (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsMalformedPopcountExpressionPlan
+[       OK ] QueueGraphPlanTest.RejectsMalformedPopcountExpressionPlan (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsMalformedCountZerosExpressionPlan
+[       OK ] QueueGraphPlanTest.RejectsMalformedCountZerosExpressionPlan (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsUnconsumedQueueAsStaticDeadlockRisk
+[       OK ] QueueGraphPlanTest.RejectsUnconsumedQueueAsStaticDeadlockRisk (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsRawQueueCycleOutsideFeedbackBlock
+[       OK ] QueueGraphPlanTest.RejectsRawQueueCycleOutsideFeedbackBlock (0 ms)
+[ RUN      ] QueueGraphPlanTest.ObservationDoesNotConsumeQueue
+[       OK ] QueueGraphPlanTest.ObservationDoesNotConsumeQueue (2 ms)
+[ RUN      ] QueueGraphPlanTest.VerificationLeafRunsInGfsimAndRejectsPycDesign
+[       OK ] QueueGraphPlanTest.VerificationLeafRunsInGfsimAndRejectsPycDesign (0 ms)
+[ RUN      ] QueueGraphPlanTest.RejectsMalformedPycFeedbackContract
+[       OK ] QueueGraphPlanTest.RejectsMalformedPycFeedbackContract (0 ms)
+[ RUN      ] QueueGraphPlanTest.BackendsRejectUncatalogedApplicationBlock
+[       OK ] QueueGraphPlanTest.BackendsRejectUncatalogedApplicationBlock (0 ms)
+[ RUN      ] QueueGraphPlanTest.BlockingBranchPresenceRequiresCandidateConjunct
+[       OK ] QueueGraphPlanTest.BlockingBranchPresenceRequiresCandidateConjunct (9 ms)
+[----------] 76 tests from QueueGraphPlanTest (73163 ms total)
+
+[----------] Global test environment tear-down
+[==========] 76 tests from 1 test suite ran. (73163 ms total)
+[  PASSED  ] 76 tests.

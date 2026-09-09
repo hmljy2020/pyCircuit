@@ -1440,6 +1440,36 @@ inlines leaf callees before callers and recursively lowers aggregate
 boolean AND tree. `ne` negates the complete equality result. No aggregate
 comparison or invariant operation may remain in Frozen ACIR or QueueGraph.
 
+### Typed pure helper functions
+
+A top-level typed `def` may factor repeated combinational value expressions:
+
+```python
+def same_identity(epoch: EpochKey, inst: InstKey, event: Event) -> bool:
+    return epoch == event.epoch and inst == event.inst
+
+@ac.inline
+def saturating_increment(value: ac.u16) -> ac.u16:
+    return value + 1 if value != 65535 else value
+```
+
+This first slice requires at least one parameter, explicit parameter and result
+types, and exactly one pure return expression, with an optional docstring.
+Calls may use positional or named arguments and may call another helper in the
+same source closure. The callee MUST be a statically resolved, unshadowed bare
+name. The helper graph MUST be finite and acyclic. Defaults, positional-only or
+keyword-only parameters, variadics, dynamic calls, external runtime captures,
+persistent state access, Queue/module operations, mutation and other effects
+are invalid. Statement bodies and loops are outside this slice.
+
+The frontend emits a private typed `func.func` marked `ac.helper` and typed
+`func.call` uses. An `@ac.inline` helper is additionally marked `ac.inline`;
+the ACIR pipeline MUST expand every such call and remove the definition before
+topology freeze. An ordinary helper remains in the QueueGraph plan and becomes
+a typed C++ helper call. PYC expands the same helper expression at each call
+site. Neither form introduces state, a cycle, a Queue boundary or a rule commit
+boundary. Downstream C++ optimization may still inline an ordinary helper.
+
 Invalid examples:
 
 ```mlir
