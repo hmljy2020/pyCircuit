@@ -17,6 +17,83 @@ from designs.davincioo.contracts.spe import (
 )
 
 
+def accepts_flush(
+    request: RobEvent,
+    flow: FlowKey,
+    epoch: ac.u16,
+    recovering: bool,
+) -> bool:
+    return (
+        request.valid
+        and request.kind == RobEventKind.FLUSH
+        and request.epoch.flow == flow
+        and request.epoch.recovery_epoch == epoch
+        and not recovering
+    )
+
+
+def accepts_handoff(
+    request: RobHandoff,
+    old: RobEvent,
+    pending: bool,
+) -> bool:
+    return (
+        request.valid
+        and request.durable
+        and pending
+        and request.epoch == old.epoch
+        and request.inst == old.inst
+        and request.block == old.block
+        and request.rob == old.rob
+        and request.required_owner_mask == old.handoff_required_mask
+        and (request.received_owner_mask & old.handoff_required_mask)
+        == old.handoff_required_mask
+        and request.mpq_histories_required == old.mpq_history_record_count
+        and request.mpq_histories_acked == old.mpq_history_record_count
+    )
+
+
+def accepts_completion(
+    response: RobCompletion,
+    old: RobEvent,
+    epoch: ac.u16,
+    recovering: bool,
+) -> bool:
+    identity = response.attempt.identity
+    return (
+        response.valid
+        and not recovering
+        and old.valid
+        and not old.done
+        and not old.handoff_pending
+        and old.epoch.recovery_epoch == epoch
+        and identity.epoch == old.epoch
+        and identity.inst == old.inst
+        and identity.block == old.block
+        and identity.rob == old.rob
+    )
+
+
+def accepts_allocation(
+    request: RobEvent,
+    flow: FlowKey,
+    epoch: ac.u16,
+    count: ac.u5,
+    recovering: bool,
+) -> bool:
+    return (
+        count < 16
+        and not recovering
+        and request.valid
+        and request.kind == RobEventKind.ALLOCATE
+        and request.epoch.flow == flow
+        and request.inst.flow == flow
+        and request.block.flow == flow
+        and request.rob.flow == flow
+        and request.epoch.recovery_epoch == epoch
+    )
+
+
 @ac.module
 def rob(
     flush_request: RobEvent,
@@ -43,14 +120,7 @@ def rob(
         flow = FlowKey(
             core_id=core_id, pe_id=pe_id, stid=stid, launch_generation=launch_generation
         )
-        accepted = (
-            request.valid
-            and request.kind == RobEventKind.FLUSH
-            and request.epoch.flow == flow
-            and request.epoch.recovery_epoch == epoch
-            and not recovering
-        )
-        if not accepted:
+        if not accepts_flush(request, flow, epoch, recovering):
             return
         epoch = epoch + 1
         recovering = pending
@@ -61,21 +131,7 @@ def rob(
     def acknowledge(request):
         nonlocal head, tail, count, recovering, pending, entries
         old = entries[head]
-        accepted = (
-            request.valid
-            and request.durable
-            and pending
-            and request.epoch == old.epoch
-            and request.inst == old.inst
-            and request.block == old.block
-            and request.rob == old.rob
-            and request.required_owner_mask == old.handoff_required_mask
-            and (request.received_owner_mask & old.handoff_required_mask)
-            == old.handoff_required_mask
-            and request.mpq_histories_required == old.mpq_history_record_count
-            and request.mpq_histories_acked == old.mpq_history_record_count
-        )
-        if not accepted:
+        if not accepts_handoff(request, old, pending):
             return
         entries[head] = old.with_fields(valid=False, handoff_pending=False)
         head = tail if recovering else head + 1
@@ -88,17 +144,7 @@ def rob(
         nonlocal epoch, recovering, entries
         identity = response.attempt.identity
         old = entries[identity.rob.slot]
-        if not response.valid or recovering:
-            return
-        if not old.valid or old.done or old.handoff_pending:
-            return
-        if (
-            old.epoch.recovery_epoch != epoch
-            or identity.epoch != old.epoch
-            or identity.inst != old.inst
-            or identity.block != old.block
-            or identity.rob != old.rob
-        ):
+        if not accepts_completion(response, old, epoch, recovering):
             return
         entries[identity.rob.slot] = old.with_fields(
             result=response.result,
@@ -130,6 +176,7 @@ def rob(
             pending = True
             return result
 
+    # NDF: DOC-DAV-SPE-OOO-ROB-ALLOCATE
     @ac.rule
     def allocate(request, core_id, pe_id, stid, launch_generation):
         nonlocal tail, count, epoch, recovering, entries
@@ -137,17 +184,7 @@ def rob(
             core_id=core_id, pe_id=pe_id, stid=stid, launch_generation=launch_generation
         )
         old = entries[tail]
-        if (
-            count < 16
-            and not recovering
-            and request.valid
-            and request.kind == RobEventKind.ALLOCATE
-            and request.epoch.flow == flow
-            and request.inst.flow == flow
-            and request.block.flow == flow
-            and request.rob.flow == flow
-            and request.epoch.recovery_epoch == epoch
-        ):
+        if accepts_allocation(request, flow, epoch, count, recovering):
             result = request.with_fields(
                 kind=RobEventKind.ALLOCATED,
                 rob=RobKey(flow=flow, slot=tail, generation=old.rob.generation + 1),

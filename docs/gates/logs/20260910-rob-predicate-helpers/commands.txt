@@ -1,0 +1,5 @@
+PYC_DAVINCIOO_SINGLE_ROB_OUT=.pycircuit_out/rob-predicate-helpers/single ACIR_OPT=.pycircuit_out/local-clang22/build/bin/acir-opt ACIR_QUEUE_CXXGEN=.pycircuit_out/local-clang22/build/bin/acir-queue-cxxgen /home/lc/.codex/skills/pyc6/scripts/run.sh pytest -q designs/davincioo/tests/spe/ooo/test_rob_single.py -x
+PYC_DAVINCIOO_ROB_OUT=.pycircuit_out/rob-predicate-helpers/dual ACIR_OPT=.pycircuit_out/local-clang22/build/bin/acir-opt ACIR_QUEUE_CXXGEN=.pycircuit_out/local-clang22/build/bin/acir-queue-cxxgen /home/lc/.codex/skills/pyc6/scripts/run.sh pytest -q designs/davincioo/tests/spe/ooo/test_rob.py -x
+/home/lc/.codex/skills/pyc6/scripts/run.sh pre-commit run --files designs/davincioo/spe/ooo/rob.py designs/davincioo/spe/ooo/rob.md designs/davincioo/spe/ooo/ndf/rob/allocate.md
+/home/lc/.codex/skills/pyc6/scripts/run.sh pytest -q tests/python/agentic-circuit/contracts/test_contracts.py::RepositoryContractsTest::test_read_only_checker_accepts_the_repository
+/home/lc/.codex/skills/pyc6/scripts/run.sh mkdocs build

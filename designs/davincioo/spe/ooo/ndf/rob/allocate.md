@@ -104,6 +104,63 @@ MUST NOT 修改槽位、generation、`tail` 或 `count`，也 MUST NOT 发布分
 环境 MUST 保证旧响应不会跨越同一槽位 65536 次复用或 65536 次恢复仍存活。
 复位前响应 MUST 在复位边界被隔离或排空；复位不保留 generation/epoch 历史。
 
+## Python 实现示例
+
+以下代码对应 [rob.py](../../rob.py) 中的组合资格 helper 与完整 `allocate` rule。
+资格 helper 不读取或修改持久状态；rule 仍独占 Queue 消费、Table 写入和原子提交。
+
+```python
+def accepts_allocation(
+    request: RobEvent,
+    flow: FlowKey,
+    epoch: ac.u16,
+    count: ac.u5,
+    recovering: bool,
+) -> bool:
+    return (
+        count < 16
+        and not recovering
+        and request.valid
+        and request.kind == RobEventKind.ALLOCATE
+        and request.epoch.flow == flow
+        and request.inst.flow == flow
+        and request.block.flow == flow
+        and request.rob.flow == flow
+        and request.epoch.recovery_epoch == epoch
+    )
+
+
+# NDF: DOC-DAV-SPE-OOO-ROB-ALLOCATE
+@ac.rule
+def allocate(request, core_id, pe_id, stid, launch_generation):
+    nonlocal tail, count, epoch, recovering, entries
+    flow = FlowKey(
+        core_id=core_id,
+        pe_id=pe_id,
+        stid=stid,
+        launch_generation=launch_generation,
+    )
+    old = entries[tail]
+    if accepts_allocation(request, flow, epoch, count, recovering):
+        result = request.with_fields(
+            kind=RobEventKind.ALLOCATED,
+            rob=RobKey(flow=flow, slot=tail, generation=old.rob.generation + 1),
+            result=0,
+            result_valid=False,
+            status=TerminalStatus.VALUE,
+            fault_code=0,
+            fault_arg0=0,
+            fault_bi=False,
+            fault_valid=False,
+            done=False,
+            handoff_pending=False,
+        )
+        entries[tail] = result
+        tail = tail + 1
+        count = count + 1
+        return result
+```
+
 ## 容量、复用及回复背压验证 {#DAV-SPE-OOO-ROB-ALLOC-VER-0001}
 <!-- ndf: kind=verification modality=must refinement=L2 domain=spe.ooo status=draft verifies=DAV-SPE-OOO-ROB-ALLOC-0002,DAV-SPE-OOO-ROB-ALLOC-0003,DAV-SPE-OOO-ROB-ALLOC-0004,DAV-SPE-OOO-ROB-ALLOC-0005 -->
 
@@ -115,6 +172,8 @@ MUST NOT 修改槽位、generation、`tail` 或 `count`，也 MUST NOT 发布分
 `capacity`、`backpressure` 场景，具体输入与期望值位于
 [共享驱动](../../../../tests/spe/ooo/rob_driver.cpp)。这些是已有证据入口，
 尚未建立项目级 NDF test/evidence 图节点。
+资格 helper 重构后的单、双 ROB 回归与回放见
+[focused refactor evidence](../../../../../../docs/gates/logs/20260910-rob-predicate-helpers/summary.md)。
 
 ## 恢复期间分配验证 {#DAV-SPE-OOO-ROB-ALLOC-VER-0002}
 <!-- ndf: kind=verification modality=must refinement=L2 domain=spe.ooo status=draft verifies=DAV-SPE-OOO-ROB-ALLOC-0002,DAV-SPE-OOO-ROB-ALLOC-0006 -->

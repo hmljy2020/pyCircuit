@@ -133,6 +133,11 @@ Nonconflicting transactions may commit together. There is no same-cycle
 completion-to-handoff bypass. All selected outputs participate in their rule's
 atomic commit; backpressure leaves that rule's state unchanged.
 
+Input eligibility for flush, CMT acknowledgement, completion and allocation is
+expressed through typed pure helpers. These helpers lower to combinational logic
+and do not own state, consume Queues or introduce commit boundaries; the five
+rules retain all state and transport effects.
+
 Reset clears all scalar state and all sixteen row images to zero before recording
 starts. The first allocation uses generation one. Slot generations and recovery
 epochs wrap modulo 65536: the environment must not retain responses across
@@ -160,6 +165,8 @@ check expected behavior without recording, then repeat identical inputs with
 recording and compare the full per-boundary projection and scheduler counters.
 Reviewable gate results and remaining gaps are recorded in
 [the gate summary](../../../../docs/gates/logs/20260908-davincioo-rob/summary.md).
+The predicate-helper refactor and regenerated single/dual replay evidence are
+recorded in [the focused refactor summary](../../../../docs/gates/logs/20260910-rob-predicate-helpers/summary.md).
 
 ### Single-instance replay
 
