@@ -1,0 +1,22 @@
+{
+  "schema": "pyc6-targeted-gate-summary",
+  "version": 1,
+  "run_id": "20260910-structured-helper-functions",
+  "base_commit": "c533f3858ce2c68132e05a8fb66ed24c3dbf9fbc",
+  "implementation_commit": "b5cc964a313d63cca66ba2a7fd2f92d3c97ae888",
+  "decision_ids": ["0230", "0222"],
+  "results": {
+    "agentic_g0": "passed_383_skipped_4",
+    "focused_frontend": "passed_11",
+    "focused_mlir": "passed_1",
+    "acir_ops": "passed_1844",
+    "queue_graph_codegen": "passed_77",
+    "pyc_cpp_verilog": "passed_output_8",
+    "davincioo_cmt": "passed_9_with_replay",
+    "pre_commit": "passed",
+    "mkdocs": "passed_with_existing_link_warnings",
+    "decision_status": "passed_230_rows",
+    "decision_status_strict": "blocked_by_missing_historical_evidence_0176_0210",
+    "check_acir": "known_failure_fw_0004"
+  }
+}

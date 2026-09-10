@@ -1,0 +1,5 @@
+Strict decision-status result: failed due to absent historical evidence paths for Decisions
+0176--0210 under docs/gates/logs/20260906-*.
+
+All 230 decision rows are implemented-verified, with zero deferred, gap-in-scope or
+implemented-unverified rows. Decision 0230 points to this existing evidence directory.

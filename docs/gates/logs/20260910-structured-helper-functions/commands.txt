@@ -1,0 +1,14 @@
+/home/lc/.codex/skills/pyc6/scripts/run.sh pytest -q tests/python/agentic-circuit/python_frontend/test_helper_functions.py
+/home/lc/.codex/skills/pyc6/scripts/run.sh pytest -q tests/python/agentic-circuit/python_frontend tests/python/agentic-circuit/contracts tests/python/agentic-circuit/cli
+/home/lc/.codex/skills/pyc6/scripts/run.sh cmake --build .pycircuit_out/local-clang22/build --target acir-opt-internal CodeGenTests -j2
+/home/lc/.codex/skills/pyc6/scripts/run.sh lit -sv .pycircuit_out/local-clang22/build/compiler/acir/tests/mlir --filter=pure-helpers
+/home/lc/.codex/skills/pyc6/scripts/run.sh .pycircuit_out/local-clang22/build/bin/ACIROpsTests
+/home/lc/.codex/skills/pyc6/scripts/run.sh .pycircuit_out/local-clang22/build/bin/CodeGenTests --gtest_filter=QueueGraphPlanTest.*
+PYC_DAVINCIOO_CMT_OUT=.pycircuit_out/helper-upgrade/cmt ACIR_OPT=.pycircuit_out/local-clang22/build/bin/acir-opt ACIR_QUEUE_CXXGEN=.pycircuit_out/local-clang22/build/bin/acir-queue-cxxgen /home/lc/.codex/skills/pyc6/scripts/run.sh pytest -q designs/davincioo/tests/spe/ooo/test_cmt.py -x
+/home/lc/.codex/skills/pyc6/scripts/run.sh cmake --build .pycircuit_out/local-clang22/build --target check-acir -j2
+/home/lc/.codex/skills/pyc6/scripts/run.sh /home/lc/opt/pycircuit-dev/bin/c++ -std=c++17 -I .pycircuit_out/helper-upgrade/g2 -I .pycircuit_out/local-clang22/install/include .pycircuit_out/helper-upgrade/g2/harness.cpp .pycircuit_out/local-clang22/install/lib/libpyc6_runtime.a -o .pycircuit_out/helper-upgrade/g2/model-run-clang
+/home/lc/.codex/skills/pyc6/scripts/run.sh .pycircuit_out/helper-upgrade/g2/model-run-clang
+/home/lc/.codex/skills/pyc6/scripts/run.sh pre-commit run --files <changed-files>
+/home/lc/.codex/skills/pyc6/scripts/run.sh mkdocs build
+/home/lc/.codex/skills/pyc6/scripts/run.sh python flows/tools/check_decision_status.py --rfc docs/rfcs/pyc6-decisions.md --status docs/gates/decision_status_v6.md --out /tmp/helper-decision-status.json
+/home/lc/.codex/skills/pyc6/scripts/run.sh python flows/tools/check_decision_status.py --rfc docs/rfcs/pyc6-decisions.md --status docs/gates/decision_status_v6.md --out /tmp/helper-decision-status-strict.json --require-no-deferred --require-all-verified --require-concrete-evidence --require-existing-evidence

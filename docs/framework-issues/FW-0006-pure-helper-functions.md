@@ -1,76 +1,70 @@
-# FW-0006：纯辅助函数与显式内联
+# FW-0006：纯辅助函数
 
-- 状态：本地已实现并验证。
+- 分类：已确认的前端表达限制；能力增强。
+- 当前状态：结构化函数体与固定多结果已在本地修复并提交。
 - 用户审阅：待审阅。
 - 主线状态：未提交 issue/PR。
 
-## 发现版本
+## 版本
 
-- 日期：2026-09-09；任务：CMT 前端表达简化讨论。
-- 基线 commit：`0e11f0e93bde4668f8a5b43c48b644e0864fbc7f`；不作为正式发布版本声明。
-- 分支：`feat/davincioo-rob`；含未提交的 CMT 实现及 FW-0001、FW-0002 修复。
+- 首次记录基线：`0e11f0e93bde4668f8a5b43c48b644e0864fbc7f`。
+- 本次修复基线：`c533f3858ce2c68132e05a8fb66ed24c3dbf9fbc`，最近标签描述
+  `agentic-circuit/import-0.3-388-gc533f385`，分支 `feat/davincioo-rob`。
+- 工具从同一 checkout 的 `.pycircuit_out/local-clang22/build` 构建；修复 commit：
+  `b5cc964a313d63cca66ba2a7fd2f92d3c97ae888`。
 
-## 当前限制与影响
+## 现状与期望
 
-rule 内尚不支持一般的普通 Python 辅助函数调用。现有 `ac.invariant` 限于单个
-nominal struct 参数、布尔返回值和单个纯返回表达式，不能覆盖通用的多参数比较、
-计数计算和记录构造。CMT 因此重复展开身份比较、饱和计数等逻辑。
-
-依据：[前端规范](../acir/spec/agentic-circuit.zh-CN.md)、
-[CMT 实现](../../designs/davincioo/spe/ooo/cmt.py)。本条记录的是能力增强建议，
-不是已确认的语义缺陷。
-
-## 建议行为
-
-普通 `def` 定义纯计算辅助函数；`@ac.inline` 显式要求编译器展开：
-
-| 源码形式 | 编译行为 |
-| --- | --- |
-| 普通 `def` | 中间表示保留函数及调用，C++ 后端生成辅助函数和调用 |
-| `@ac.inline` 的 `def` | 由框架编译器在调用位置展开函数体 |
-
-两种形式具有相同的值语义，不新增持久状态、时钟周期或 rule 提交边界。
-普通 C++ 辅助函数仍可能被下游优化器自动内联，不要求最终机器码保留调用；
-`@ac.inline` 也不是仅在生成 C++ 时添加 `inline` 关键字。
-
-首期边界：调用目标静态确定，参数和返回值使用已有类型；函数体只包含一个纯返回
-表达式，可使用条件表达式并嵌套调用 helper。运行时数据通过参数传入；禁止读取或修改外部
-持久状态、操作 Queue、递归、动态调用及外部副作用。编译器检查这些约束并明确报错。
-
-## 最小表达示例
-
-以下语法已由前端、ACIR、QueueGraph C++ 和 PYC 测试覆盖：
+Decision 0229 的基础 pure helper 只接受一个纯 `return expression` 和一个结果。带局部
+计算、`if/else` 或一组相关结果的组合逻辑必须在 rule 中重复展开。期望普通 Python
+`def` 能描述这类纯组合计算，并保持零状态、零额外周期和零提交边界。
 
 ```python
-def saturating_increment(value: ac.u16) -> ac.u16:
-    return value + 1 if value != 65535 else value
+def next_state(valid: bool, count: ac.u16) -> tuple[ac.u16, bool]:
+    overflow = False
+    if valid:
+        count = count + 1
+        overflow = True
+    else:
+        count = 1
+    return count, overflow
 
-@ac.inline
-def saturating_increment_inline(value: ac.u16) -> ac.u16:
-    return value + 1 if value != 65535 else value
+count, overflow = next_state(old.valid, old.count)
 ```
 
-rule 分别调用两个函数，应得到相同计算结果；前者生成 C++ 辅助函数调用，后者在
-框架编译阶段展开。类型推导或特化的详细规则在实现设计中补齐。
+## 实现影响与方案
 
-## 实现与验收要求
+原实现把 helper 的函数体和返回值硬编码为单表达式、单结果；ACIR inline、QueueGraph
+plan、C++ 与 PYC 后端也沿用了单结果模型。
 
-- 扩展前端函数解析和类型检查；在中间表示及 verifier 中表达纯函数、调用与约束，
-  再实现内联和后端生成，不能只在 C++ 后端改变语义。
-- 普通函数允许其他后端按目标需要展开，不把软件调用解释成额外硬件周期。
-- 补充普通调用、显式内联的生成代码检查，以及边界值、嵌套调用、条件计算的
-  gfsim 等价测试；验证非法副作用、递归和动态调用被拒绝。
-- 用 CMT 重复计算验证实际简化效果，同步对应 NDF 示例并回归功能与回放。
-- 实现前对照 Decision 0221 确定决策更新及 gate 范围；CMT 用例遵循 Decision 0222。
-  同步规范，使用 `$pyc6` 固定环境，并将验证证据归档至 `docs/gates/logs/<run-id>/`。
+本地修复允许 typed 局部赋值和重绑定、有限嵌套 `if/elif/else`、一个最终 `return`，
+以及固定 `tuple[T0, ...]` 的精确直接解构。分支合并为 SSA `ac.var.select`；多结果使用
+多个 `func.call` SSA result。普通 helper 在 C++ 中仍只调用一次并用 `std::tuple`
+承载结果，PYC 在调用点只展开一次并映射全部 yield。ACIR verifier 和 QueueGraph plan
+同时校验结果数量与类型。循环、early return、持久状态及 Queue/Table effect 仍被拒绝。
 
-## 证据与解决状态
+DavinciOO CMT 已用一个三结果 helper 合并诊断计数、overflow 与 dropped 更新；对应 NDF
+片段同步更新。
 
-解决方案已按 Decision 0229 落地：前端生成 `func.func`/`func.call`，ACIR verifier
-检查纯度、类型和无环调用图，`@ac.inline` 在框架 pass 中强制展开；普通 helper
-由 QueueGraph C++ 保留为 typed 调用，PYC 在生成时展开。CMT 已使用 helper 提取
-身份比较和饱和计数逻辑，并同步规则 NDF 示例。
+## 复现与证据
 
-验证证据见
-[20260909-pure-helper-functions](../gates/logs/20260909-pure-helper-functions/summary.md)。
-修复包含在本记录所在提交中；主线 issue/PR 状态仍为未提交。
+```bash
+/home/lc/.codex/skills/pyc6/scripts/run.sh pytest -q \
+  tests/python/agentic-circuit/python_frontend/test_helper_functions.py
+
+/home/lc/.codex/skills/pyc6/scripts/run.sh lit -sv \
+  .pycircuit_out/local-clang22/build/compiler/acir/tests/mlir \
+  --filter=pure-helpers
+
+/home/lc/.codex/skills/pyc6/scripts/run.sh \
+  .pycircuit_out/local-clang22/build/bin/CodeGenTests \
+  --gtest_filter=QueueGraphPlanTest.*
+```
+
+回归覆盖结构化局部变量、字段更新、分支合并、多结果解构、嵌套 helper、非法路径定义、
+ACIR 多结果 inline、伪造 QueueGraph 结果元数据、单次 C++ 调用和单次 PYC 展开。完整结果
+见 [20260910-structured-helper-functions](../gates/logs/20260910-structured-helper-functions/summary.md)。
+
+基础 single-expression helper 的实现 commit 为
+`c533f3858ce2c68132e05a8fb66ed24c3dbf9fbc`；结构化函数体与固定多结果的修复 commit 为
+`b5cc964a313d63cca66ba2a7fd2f92d3c97ae888`。

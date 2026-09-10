@@ -1,0 +1,8 @@
+Total Discovered Tests: 199
+Unsupported: 2
+Passed: 196
+Failed: 1
+
+Failed test: AgenticCircuit :: CodeGen/emit-cxx-current.mlir
+Known cause: FW-0004 acir-build host link omits required ACIRBindings and LLVM support symbols.
+This failure predates and is outside the structured helper change.

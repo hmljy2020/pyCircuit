@@ -10,9 +10,10 @@
 | FW-0003 | [无法连续录制跨复位回放](FW-0003-replay-reset.md) | 现有录制边界；未扩展 | 待审阅 | 未提交 |
 | FW-0004 | [acir-build 生成程序链接缺少依赖](FW-0004-acir-build-link.md) | 工具链路失败；根因和修复待进一步确认 | 待审阅 | 未提交 |
 | FW-0005 | [字段赋值简写](FW-0005-field-assignment-syntax.md) | 本地已修复并提交 | 待审阅 | 未提交 |
-| FW-0006 | [纯辅助函数与显式内联](FW-0006-pure-helper-functions.md) | 本地已实现并验证 | 待审阅 | 未提交 |
+| FW-0006 | [纯辅助函数](FW-0006-pure-helper-functions.md) | 结构化函数体与固定多结果已在本地修复并提交 | 待审阅 | 未提交 |
 | FW-0007 | [非法 output presence 的诊断顺序](FW-0007-output-presence-diagnostic.md) | fixed locally, uncommitted（诊断回归已修复） | 待审阅 | 未提交 |
 | FW-0008 | [原生单测期望未同步](FW-0008-native-test-expectations.md) | fixed locally, uncommitted（测试期望已同步） | 待审阅 | 未提交 |
+| FW-0009 | [自动推导嵌套 rule 的模块状态捕获](FW-0009-infer-nested-rule-state-captures.md) | 已记录，尚未实现 | 待审阅 | 未提交 |
 
 ## 维护约定
 
