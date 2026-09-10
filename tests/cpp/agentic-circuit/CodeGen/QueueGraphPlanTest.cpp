@@ -147,6 +147,25 @@ module attributes {ac.contract_epoch = "0.5", ac.model_kind = "queue_graph", ac.
 }
 )mlir";
 
+constexpr llvm::StringLiteral kQueueGraphWithMultiResultHelper = R"mlir(
+module attributes {ac.contract_epoch = "0.5", ac.model_kind = "queue_graph", ac.queue_graph_domain = "cycle", ac.system = "multi_helper_pipeline"} {
+  func.func private @classify(%arg0: !ac.var<i8>) -> (!ac.var<i8>, !ac.var<i1>) attributes {ac.helper = true, ac.inline = false} {
+    %one = ac.var.constant 1 : i8 as !ac.var<i8>
+    %adjusted = ac.var.add %arg0, %one : !ac.var<i8>
+    %valid = ac.var.constant true as !ac.var<i1>
+    return %adjusted, %valid : !ac.var<i8>, !ac.var<i1>
+  }
+  %input = ac.source depth 1 latency 1 {ac.name = "input"} : !ac.queue<i8>
+  %output = ac.transform %input depths [1] latencies [1] {
+  ^body(%item: !ac.var<i8>):
+    %adjusted, %valid = func.call @classify(%item) : (!ac.var<i8>) -> (!ac.var<i8>, !ac.var<i1>)
+    %result = ac.var.select %valid, %adjusted, %item : !ac.var<i1>, !ac.var<i8> -> !ac.var<i8>
+    ac.transform.yield %result : !ac.var<i8>
+  } {ac.name = "output"} : (!ac.queue<i8>) -> !ac.queue<i8>
+  ac.sink %output {ac.name = "sink"} : !ac.queue<i8>
+}
+)mlir";
+
 constexpr llvm::StringLiteral kStructuredTransform = R"mlir(
 module attributes {ac.contract_epoch = "0.5", ac.model_kind = "queue_graph", ac.queue_graph_domain = "cycle", ac.system = "structured"} {
   ac.type_scope @types {
@@ -596,6 +615,43 @@ TEST(QueueGraphPlanTest, PreservesHelpersForCppAndExpandsThemForPyc) {
   ASSERT_TRUE(bool(recursiveError));
   EXPECT_NE(llvm::toString(std::move(recursiveError)).find(
                 "helper call graph must be acyclic"),
+            std::string::npos);
+}
+
+TEST(QueueGraphPlanTest, PreservesMultiResultHelperAsOneCppCallAndExpandsPyc) {
+  mlir::MLIRContext context;
+  context.loadDialect<ac::ACIRDialect, mlir::DLTIDialect,
+                      mlir::func::FuncDialect>();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      kQueueGraphWithMultiResultHelper, &context);
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(acir::verifyPureHelpers(*module)));
+  ASSERT_TRUE(freezeQueueGraph(*module));
+  auto plan = buildQueueGraphPlan(*module);
+  ASSERT_TRUE(bool(plan)) << llvm::toString(plan.takeError());
+  ASSERT_EQ(plan->helpers.size(), 1u);
+  ASSERT_EQ(plan->helpers.front().resultTypes.size(), 2u);
+  ASSERT_EQ(plan->blocks[1].expressions.size(), 2u);
+  EXPECT_EQ(plan->blocks[1].expressions.front().additionalResults.size(), 1u);
+
+  auto cpp = generateQueueGraphCpp(*plan);
+  ASSERT_TRUE(bool(cpp)) << llvm::toString(cpp.takeError());
+  EXPECT_NE(cpp->find("std::tuple<"), std::string::npos);
+  EXPECT_NE(cpp->find("auto [v0, v0_result1] = helper_classify"),
+            std::string::npos);
+  expectCppCompiles(*cpp);
+
+  auto pyc = generateQueueGraphPyc(*plan);
+  ASSERT_TRUE(bool(pyc)) << llvm::toString(pyc.takeError());
+  EXPECT_EQ(pyc->find("func.call"), std::string::npos);
+  EXPECT_NE(pyc->find("pyc.add"), std::string::npos);
+  EXPECT_NE(pyc->find("pyc.select"), std::string::npos);
+
+  plan->blocks[1].expressions.front().additionalResultTypes.front() = "i8";
+  auto metadataError = verifyQueueGraphPlan(*plan);
+  ASSERT_TRUE(bool(metadataError));
+  EXPECT_NE(llvm::toString(std::move(metadataError))
+                .find("helper call metadata is inconsistent"),
             std::string::npos);
 }
 

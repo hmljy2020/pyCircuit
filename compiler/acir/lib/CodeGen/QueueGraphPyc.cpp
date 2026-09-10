@@ -2,6 +2,7 @@
 #include "acir/CodeGen/QueueBlockContract.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -125,11 +126,17 @@ llvm::Expected<std::string> yieldedType(const QueueBlockPlan &block,
     return inputType.str();
   auto found = std::find_if(block.expressions.begin(), block.expressions.end(),
                             [&](const QueueExpressionPlan &expression) {
-                              return expression.result == yield;
+                              return expression.result == yield ||
+                                     llvm::is_contained(
+                                         expression.additionalResults, yield);
                             });
   if (found == block.expressions.end())
     return pycError("yield references unknown expression value");
-  return found->type;
+  if (found->result == yield)
+    return found->type;
+  auto index = llvm::find(found->additionalResults, yield) -
+               found->additionalResults.begin();
+  return found->additionalResultTypes[index];
 }
 
 llvm::Expected<std::string>
@@ -185,11 +192,25 @@ emitTransform(const QueueGraphPlan &plan, const QueueBlockPlan &block,
         arguments.push_back(std::move(*argument));
         argumentTypes.push_back(std::move(*argumentType));
       }
+      if (helper->resultTypes.size() !=
+              expression.additionalResultTypes.size() + 1 ||
+          helper->body.yields.size() != helper->resultTypes.size())
+        return pycError("helper result metadata is malformed");
+      llvm::StringMap<std::string> expandedValues;
       auto expanded = emitTransform(plan, helper->body, arguments,
-                                    argumentTypes, 0, nextValue, body);
+                                    argumentTypes, 0, nextValue, body,
+                                    &expandedValues);
       if (!expanded)
         return expanded.takeError();
       result = std::move(*expanded);
+      for (auto [index, name] :
+           llvm::enumerate(expression.additionalResults)) {
+        auto value = expandedValues.find(helper->body.yields[index + 1]);
+        if (value == expandedValues.end())
+          return pycError("helper expansion did not define every result");
+        values[name] = value->getValue();
+        types[name] = expression.additionalResultTypes[index];
+      }
     } else if (expression.kind == "enum_constant") {
       result = newValue();
       auto type = pycType(plan, expression.type);

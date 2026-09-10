@@ -349,18 +349,27 @@ def saturating_increment(value: ac.u16) -> ac.u16:
     return value + 1 if value != 65535 else value
 ```
 
-首期要求至少一个参数、所有参数和返回值都有明确类型，并且除可选 docstring 外只有
-一个 pure return expression。调用可使用位置参数或命名参数，也可以调用同一 source
+helper 要求至少一个参数、所有参数和返回值都有明确类型、可选 docstring，以及一个位于
+函数末尾的 return。函数体可以包含局部赋值、保持精确类型的重新赋值，以及有限嵌套的
+`if`/`elif`/`else`。分支 lower 为 SSA `ac.var.select`；分支后的值必须在每条路径上都有
+定义。局部 record 字段赋值沿用 rule 局部值的不可变更新语义。
+
+helper 可以返回一个值，也可以返回包含至少两个结果的固定 `tuple[T0, ...]`。多结果
+lower 为多个 `func.call` SSA result，且只能在 helper 或 rule 中按精确数量直接解构为
+局部名字；它不是可保存的 tuple value，不能整体索引、嵌入其他表达式或不经解构传递。
+
+调用可使用位置参数或命名参数，也可以调用同一 source
 closure 中的其他 helper；callee 必须是未被 lexical binding 遮蔽且静态解析的裸名，
 调用图必须有限、无环。默认参数、positional-only/keyword-only 参数、variadic、动态
-调用、外部 runtime capture、持久状态访问、Queue/module 操作、修改和其他副作用非法。
-statement body 和循环不在首期范围内。
+调用、外部 runtime capture、持久状态访问、Queue/module 操作、early return、循环、
+augmented assignment 和其他副作用非法。
 
 前端生成标记 `ac.helper` 的 private typed `func.func` 及 typed `func.call`。
 `@ac.inline` 额外标记 `ac.inline`，ACIR pipeline 必须在 topology freeze 前展开全部调用
-并删除该定义。普通 helper 保留在 QueueGraph plan 中，gfsim C++ 生成 typed helper
-函数和真实调用；PYC 在每个调用点展开同一个表达式。两种形式都不增加状态、周期、
-Queue 边界或 rule 提交边界；下游 C++ 优化器仍可自行内联普通 helper。
+并删除该定义。普通 helper 保留在 QueueGraph plan 中，gfsim C++ 生成一次 typed helper
+真实调用；固定多结果通过 `std::tuple` 直接解构。PYC 在每个调用点展开一次 helper body
+并映射全部结果。两种形式都不增加状态、周期、Queue 边界或 rule 提交边界；下游 C++
+优化器仍可自行内联普通 helper。
 
 ### 静态 bits 与命名 bitfield view
 

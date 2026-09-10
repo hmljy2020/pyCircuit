@@ -255,6 +255,8 @@ class RuleLocalDefinition:
     guard_negated: bool = False
     prior_name: str | None = None
     type_argument: str | None = None
+    helper_call_group: int | None = None
+    helper_result_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +299,8 @@ class RuleLocalBinding:
     guard_negated: bool = False
     prior_name: str | None = None
     type_argument: str | None = None
+    helper_call_group: int | None = None
+    helper_result_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -781,9 +785,32 @@ class InvariantDefinition:
 class HelperDefinition:
     function_name: str
     parameters: tuple[tuple[str, ValueType], ...]
-    result: ValueType
-    expression: ast.expr
+    results: tuple[ValueType, ...]
+    body: tuple[ast.stmt, ...]
     inline: bool
+
+
+def _helper_result_types(
+    annotation: ast.expr,
+    payloads: dict[str, Payload],
+    enums: Mapping[str, ValueType],
+) -> tuple[ValueType, ...]:
+    if (
+        isinstance(annotation, ast.Subscript)
+        and _decorator_name(annotation.value).rsplit(".", 1)[-1]
+        in {"tuple", "Tuple"}
+    ):
+        elements = (
+            tuple(annotation.slice.elts)
+            if isinstance(annotation.slice, ast.Tuple)
+            else (annotation.slice,)
+        )
+        if len(elements) < 2:
+            raise QueueFrontendError(
+                "ACPY-HELPER-001: helper result tuple requires at least two elements"
+            )
+        return tuple(_payload(element, payloads, enums) for element in elements)
+    return (_payload(annotation, payloads, enums),)
 
 
 def _helper_definitions(
@@ -826,6 +853,7 @@ def _helper_definitions(
                     "variadic arguments"
                 )
             continue
+        node = _normalize_rule_field_assignments(node)
         body = list(node.body)
         if (
             body
@@ -834,20 +862,54 @@ def _helper_definitions(
             and isinstance(body[0].value.value, str)
         ):
             body.pop(0)
-        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+        if not body or not isinstance(body[-1], ast.Return) or body[-1].value is None:
             if marked_inline:
                 raise QueueFrontendError(
-                    f"ACPY-HELPER-002: helper {node.name!r} requires one pure return expression"
+                    f"ACPY-HELPER-002: helper {node.name!r} requires one final return"
+                )
+            continue
+        if any(isinstance(item, ast.Return) for item in body[:-1]):
+            if marked_inline:
+                raise QueueFrontendError(
+                    f"ACPY-HELPER-002: helper {node.name!r} forbids early return"
+                )
+            continue
+        def valid_statement(statement: ast.stmt) -> bool:
+            if isinstance(statement, ast.Assign):
+                if len(statement.targets) != 1:
+                    return False
+                target = statement.targets[0]
+                return isinstance(target, ast.Name) or (
+                    isinstance(target, (ast.Tuple, ast.List))
+                    and len(target.elts) >= 2
+                    and all(isinstance(item, ast.Name) for item in target.elts)
+                    and isinstance(statement.value, ast.Call)
+                )
+            if isinstance(statement, ast.If):
+                return bool(statement.body) and all(
+                    valid_statement(item)
+                    for item in (*statement.body, *statement.orelse)
+                )
+            return False
+        if not all(valid_statement(item) for item in body[:-1]):
+            if marked_inline:
+                raise QueueFrontendError(
+                    f"ACPY-HELPER-002: helper {node.name!r} contains an "
+                    "unsupported statement"
                 )
             continue
         parameters = tuple(
             (argument.arg, _payload(argument.annotation, payloads, enums))
             for argument in node.args.args
         )
-        result = _payload(node.returns, payloads, enums)
+        results = _helper_result_types(node.returns, payloads, enums)
         definitions.append(
             HelperDefinition(
-                node.name, parameters, result, copy.deepcopy(body[0].value), marked_inline
+                node.name,
+                parameters,
+                results,
+                tuple(copy.deepcopy(body)),
+                marked_inline,
             )
         )
     names = [definition.function_name for definition in definitions]
@@ -860,7 +922,8 @@ def _helper_definitions(
         graph[definition.function_name] = tuple(
             dict.fromkeys(
                 call.func.id
-                for call in ast.walk(definition.expression)
+                for statement in definition.body
+                for call in ast.walk(statement)
                 if isinstance(call, ast.Call)
                 and isinstance(call.func, ast.Name)
                 and call.func.id not in shadowed
@@ -2163,6 +2226,7 @@ def parse_queue_program(
         }
         next_version = 0
         next_condition = 0
+        next_helper_call_group = 0
 
         class RewriteLoads(ast.NodeTransformer):
             def visit_Subscript(self, candidate: ast.Subscript) -> ast.expr:
@@ -2204,11 +2268,67 @@ def parse_queue_program(
             )
 
         def assign(statement: ast.Assign, guard: ast.expr | None) -> None:
+            nonlocal next_helper_call_group
             if len(statement.targets) != 1:
                 raise QueueFrontendError(
                     "ACPY-RULE-014: multi-output rule assignments require one target"
                 )
             target = statement.targets[0]
+            if isinstance(target, (ast.Tuple, ast.List)):
+                if (
+                    not isinstance(statement.value, ast.Call)
+                    or not isinstance(statement.value.func, ast.Name)
+                    or statement.value.func.id not in helpers_by_name
+                    or not all(isinstance(item, ast.Name) for item in target.elts)
+                ):
+                    raise QueueFrontendError(
+                        "ACPY-HELPER-004: tuple assignment requires a "
+                        "statically resolved multi-result helper"
+                    )
+                helper = helpers_by_name[statement.value.func.id]
+                names = [item.id for item in target.elts if isinstance(item, ast.Name)]
+                if len(names) != len(helper.results) or len(helper.results) < 2:
+                    raise QueueFrontendError(
+                        "ACPY-HELPER-004: helper result unpacking arity does not "
+                        "match its annotation"
+                    )
+                if len(names) != len(set(names)):
+                    raise QueueFrontendError(
+                        "ACPY-HELPER-004: helper result unpacking names must be unique"
+                    )
+                value = rewrite(statement.value)
+                assert isinstance(value, ast.Call)
+                group = next_helper_call_group
+                next_helper_call_group += 1
+                for result_index, name in enumerate(names):
+                    if name == parameter or name in state_parameters:
+                        raise QueueFrontendError(
+                            "ACPY-HELPER-004: helper results require local targets"
+                        )
+                    if name in output_names:
+                        typed.add(name)
+                        if guard is None:
+                            unconditionally_initialized.add(name)
+                            presences[name] = ast.Constant(value=True)
+                        else:
+                            presences[name] = ast.IfExp(
+                                test=copy.deepcopy(guard),
+                                body=ast.Constant(value=True),
+                                orelse=copy.deepcopy(presences[name]),
+                            )
+                    version, prior = allocate(name)
+                    locals_.append(
+                        RuleLocalDefinition(
+                            version,
+                            copy.deepcopy(value),
+                            copy.deepcopy(guard),
+                            False,
+                            prior,
+                            helper_call_group=group,
+                            helper_result_index=result_index,
+                        )
+                    )
+                return
             if (
                 isinstance(target, ast.Subscript)
                 and isinstance(target.value, ast.Name)
@@ -2709,6 +2829,7 @@ def parse_queue_program(
         partial_local_versions: set[str] = set()
         partial_local_guards: dict[str, tuple[ast.expr, bool]] = {}
         next_local_version = 0
+        next_helper_call_group = 0
         reserved_names = {item.id for item in ast.walk(node) if isinstance(item, ast.Name)}
         reserved_names.update(parameter_names)
 
@@ -2799,6 +2920,59 @@ def parse_queue_program(
                 valid_multi_state = False
                 break
             target = statement.targets[0]
+            if isinstance(target, (ast.Tuple, ast.List)):
+                if (
+                    not isinstance(statement.value, ast.Call)
+                    or not isinstance(statement.value.func, ast.Name)
+                    or statement.value.func.id not in helpers_by_name
+                    or not all(isinstance(item, ast.Name) for item in target.elts)
+                ):
+                    valid_multi_state = False
+                    break
+                helper = helpers_by_name[statement.value.func.id]
+                if len(target.elts) != len(helper.results) or len(helper.results) < 2:
+                    raise QueueFrontendError(
+                        "ACPY-HELPER-004: helper result unpacking arity does not "
+                        "match its annotation"
+                    )
+                target_names = [item.id for item in target.elts if isinstance(item, ast.Name)]
+                if len(target_names) != len(set(target_names)):
+                    raise QueueFrontendError(
+                        "ACPY-HELPER-004: helper result unpacking names must be unique"
+                    )
+                rewritten_call = rewrite_local_loads(statement.value)
+                rewritten_guard = rewrite_local_loads(branch_guard)
+                assert isinstance(rewritten_call, ast.Call)
+                group = next_helper_call_group
+                next_helper_call_group += 1
+                for result_index, logical_name in enumerate(target_names):
+                    if logical_name in parameter_names:
+                        raise QueueFrontendError(
+                            "ACPY-RULE-011: helper results cannot replace rule parameters"
+                        )
+                    prior_version = local_versions.get(logical_name)
+                    version, allocated_prior = allocate_local_version(logical_name)
+                    assert allocated_prior == prior_version
+                    local_names.add(logical_name)
+                    if branch_guard is not None and prior_version is None:
+                        partial_local_versions.add(version)
+                        assert rewritten_guard is not None
+                        partial_local_guards[version] = (
+                            rewritten_guard,
+                            branch_negated,
+                        )
+                    rule_locals.append(
+                        RuleLocalDefinition(
+                            version,
+                            copy.deepcopy(rewritten_call),
+                            rewritten_guard,
+                            branch_negated,
+                            prior_version,
+                            helper_call_group=group,
+                            helper_result_index=result_index,
+                        )
+                    )
+                continue
             if (
                 isinstance(target, ast.Name)
                 and isinstance(statement.value, ast.Call)
@@ -6638,6 +6812,8 @@ def parse_queue_program(
                             local.guard_negated,
                             local.prior_name,
                             local.type_argument,
+                            local.helper_call_group,
+                            local.helper_result_index,
                         )
                         for local in definition.locals
                     )
@@ -6735,6 +6911,8 @@ def parse_queue_program(
                                 local.guard_negated,
                                 local.prior_name,
                                 local.type_argument,
+                                local.helper_call_group,
+                                local.helper_result_index,
                             )
                             for local in definition.locals
                         )
@@ -7442,6 +7620,8 @@ def parse_queue_program(
                                     local.guard_negated,
                                     local.prior_name,
                                     local.type_argument,
+                                    local.helper_call_group,
+                                    local.helper_result_index,
                                 )
                                 for local in definition.locals
                             ),
@@ -7916,24 +8096,102 @@ class _ExpressionEmitter:
         )
         return name, result_type
 
+    def _lexical_bindings(self) -> set[str]:
+        return {
+            self.argument,
+            *self.root_values,
+            *self.deferred_values,
+            *self.table_views,
+            *self.slot_views,
+            *self.candidates,
+            *self.selections,
+            *self.candidate_values,
+            *self.selection_values,
+            *self.find_values,
+            *self.state_views,
+            *self.table_domains,
+        }
+
+    def emit_helper_call(
+        self, node: ast.Call
+    ) -> tuple[tuple[str, ValueType], ...]:
+        helper = (
+            self.helpers.get(node.func.id)
+            if isinstance(node.func, ast.Name)
+            and node.func.id not in self._lexical_bindings()
+            else None
+        )
+        if helper is None:
+            raise QueueFrontendError(
+                "ACPY-HELPER-004: multi-result assignment requires a "
+                "statically resolved helper call"
+            )
+        parameter_names = [name for name, _ in helper.parameters]
+        if len(node.args) > len(parameter_names) or any(
+            keyword.arg is None for keyword in node.keywords
+        ):
+            raise QueueFrontendError(
+                f"ACPY-HELPER-004: malformed call to helper {helper.function_name!r}"
+            )
+        arguments: dict[str, ast.expr] = {
+            parameter_names[index]: value for index, value in enumerate(node.args)
+        }
+        for keyword in node.keywords:
+            assert keyword.arg is not None
+            if keyword.arg not in parameter_names or keyword.arg in arguments:
+                raise QueueFrontendError(
+                    f"ACPY-HELPER-004: invalid or repeated argument "
+                    f"{keyword.arg!r} for helper {helper.function_name!r}"
+                )
+            arguments[keyword.arg] = keyword.value
+        missing = [name for name in parameter_names if name not in arguments]
+        if missing:
+            raise QueueFrontendError(
+                f"ACPY-HELPER-004: helper {helper.function_name!r} is missing "
+                + ", ".join(repr(name) for name in missing)
+            )
+        operands: list[str] = []
+        operand_types: list[ValueType] = []
+        for name, parameter_type in helper.parameters:
+            operand, operand_type = self.emit(arguments[name], parameter_type)
+            if not _types_equal_in_epoch_05(operand_type, parameter_type):
+                raise QueueFrontendError(
+                    f"ACPY-HELPER-004: helper {helper.function_name!r} "
+                    f"argument {name!r} type mismatch"
+                )
+            operands.append(operand)
+            operand_types.append(operand_type)
+        result_names = tuple(self._new() for _ in helper.results)
+        self.lines.append(
+            "    "
+            + ", ".join(f"%{name}" for name in result_names)
+            + f" = func.call @{helper.function_name}("
+            + ", ".join(f"%{operand}" for operand in operands)
+            + ") : ("
+            + ", ".join(
+                f"!ac.var<{_render_type(value_type)}>"
+                for value_type in operand_types
+            )
+            + ") -> "
+            + (
+                f"!ac.var<{_render_type(helper.results[0])}>"
+                if len(helper.results) == 1
+                else "(" + ", ".join(
+                    f"!ac.var<{_render_type(value_type)}>"
+                    for value_type in helper.results
+                ) + ")"
+            )
+        )
+        return tuple(
+            self._remember(name, value_type)
+            for name, value_type in zip(result_names, helper.results, strict=True)
+        )
+
     def emit(
         self, node: ast.expr, expected: ValueType | None = None
     ) -> tuple[str, ValueType]:
         if isinstance(node, ast.Call):
-            lexical_bindings = {
-                self.argument,
-                *self.root_values,
-                *self.deferred_values,
-                *self.table_views,
-                *self.slot_views,
-                *self.candidates,
-                *self.selections,
-                *self.candidate_values,
-                *self.selection_values,
-                *self.find_values,
-                *self.state_views,
-                *self.table_domains,
-            }
+            lexical_bindings = self._lexical_bindings()
             invariant = _resolve_invariant_call(
                 node, self.invariants, lexical_bindings
             )
@@ -7995,54 +8253,13 @@ class _ExpressionEmitter:
                 else None
             )
             if helper is not None:
-                parameter_names = [name for name, _ in helper.parameters]
-                if len(node.args) > len(parameter_names) or any(
-                    keyword.arg is None for keyword in node.keywords
-                ):
+                results = self.emit_helper_call(node)
+                if len(results) != 1:
                     raise QueueFrontendError(
-                        f"ACPY-HELPER-004: malformed call to helper {helper.function_name!r}"
+                        f"ACPY-HELPER-004: helper {helper.function_name!r} "
+                        "with multiple results requires direct unpacking"
                     )
-                arguments: dict[str, ast.expr] = {
-                    parameter_names[index]: value
-                    for index, value in enumerate(node.args)
-                }
-                for keyword in node.keywords:
-                    assert keyword.arg is not None
-                    if keyword.arg not in parameter_names or keyword.arg in arguments:
-                        raise QueueFrontendError(
-                            f"ACPY-HELPER-004: invalid or repeated argument "
-                            f"{keyword.arg!r} for helper {helper.function_name!r}"
-                        )
-                    arguments[keyword.arg] = keyword.value
-                missing = [name for name in parameter_names if name not in arguments]
-                if missing:
-                    raise QueueFrontendError(
-                        f"ACPY-HELPER-004: helper {helper.function_name!r} is missing "
-                        + ", ".join(repr(name) for name in missing)
-                    )
-                operands: list[str] = []
-                operand_types: list[ValueType] = []
-                for name, parameter_type in helper.parameters:
-                    operand, operand_type = self.emit(arguments[name], parameter_type)
-                    if not _types_equal_in_epoch_05(operand_type, parameter_type):
-                        raise QueueFrontendError(
-                            f"ACPY-HELPER-004: helper {helper.function_name!r} "
-                            f"argument {name!r} type mismatch"
-                        )
-                    operands.append(operand)
-                    operand_types.append(operand_type)
-                result = self._new()
-                self.lines.append(
-                    f"    %{result} = func.call @{helper.function_name}("
-                    + ", ".join(f"%{operand}" for operand in operands)
-                    + ") : ("
-                    + ", ".join(
-                        f"!ac.var<{_render_type(value_type)}>"
-                        for value_type in operand_types
-                    )
-                    + f") -> !ac.var<{_render_type(helper.result)}>"
-                )
-                return self._remember(result, helper.result)
+                return results[0]
         if isinstance(node, ast.IfExp):
             condition, condition_type = self.emit(node.test, BoolType())
             if not _is_epoch_05_bool_compatible(condition_type):
@@ -9060,24 +9277,168 @@ def _render_helper_functions(
             invariants=invariants,
             helpers=helpers,
         )
-        value, value_type = emitter.emit(definition.expression, definition.result)
-        if not _types_equal_in_epoch_05(value_type, definition.result):
+        returned = definition.body[-1]
+        assert isinstance(returned, ast.Return) and returned.value is not None
+        result_nodes = (
+            tuple(returned.value.elts)
+            if isinstance(returned.value, (ast.Tuple, ast.List))
+            else (returned.value,)
+        )
+        if len(result_nodes) != len(definition.results):
             raise QueueFrontendError(
-                f"ACPY-HELPER-005: helper {definition.function_name!r} result type mismatch"
+                f"ACPY-HELPER-005: helper {definition.function_name!r} return "
+                "arity does not match its annotation"
             )
+        return_local_types = {
+            node.id: expected
+            for node, expected in zip(result_nodes, definition.results, strict=True)
+            if isinstance(node, ast.Name)
+        }
+
+        def assign(statement: ast.Assign) -> None:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                previous = emitter.root_values.get(target.id)
+                value, value_type = emitter.emit(
+                    statement.value,
+                    (
+                        return_local_types.get(target.id)
+                        if previous is None
+                        else previous[1]
+                    ),
+                )
+                if previous is not None and not _types_equal_in_epoch_05(
+                    previous[1], value_type
+                ):
+                    raise QueueFrontendError(
+                        f"ACPY-HELPER-005: helper {definition.function_name!r} "
+                        f"reassigns {target.id!r} with a different type"
+                    )
+                emitter.root_values[target.id] = (value, value_type)
+                return
+            assert isinstance(target, (ast.Tuple, ast.List))
+            assert isinstance(statement.value, ast.Call)
+            values = emitter.emit_helper_call(statement.value)
+            if len(values) != len(target.elts):
+                raise QueueFrontendError(
+                    f"ACPY-HELPER-004: helper result unpacking expects "
+                    f"{len(values)} names, got {len(target.elts)}"
+                )
+            for item, value in zip(target.elts, values, strict=True):
+                assert isinstance(item, ast.Name)
+                previous = emitter.root_values.get(item.id)
+                if previous is not None and not _types_equal_in_epoch_05(
+                    previous[1], value[1]
+                ):
+                    raise QueueFrontendError(
+                        f"ACPY-HELPER-005: helper {definition.function_name!r} "
+                        f"reassigns {item.id!r} with a different type"
+                    )
+                emitter.root_values[item.id] = value
+
+        def compile_statements(statements: Collection[ast.stmt]) -> None:
+            for statement in statements:
+                if isinstance(statement, ast.Assign):
+                    assign(statement)
+                    continue
+                if not isinstance(statement, ast.If):
+                    raise QueueFrontendError(
+                        f"ACPY-HELPER-002: helper {definition.function_name!r} "
+                        "contains an unsupported statement"
+                    )
+                condition, condition_type = emitter.emit(statement.test, BoolType())
+                if not _is_epoch_05_bool_compatible(condition_type):
+                    raise QueueFrontendError(
+                        f"ACPY-HELPER-005: helper {definition.function_name!r} "
+                        "if condition must be bool"
+                    )
+                before = dict(emitter.root_values)
+                emitter.root_values = dict(before)
+                compile_statements(statement.body)
+                true_values = dict(emitter.root_values)
+                emitter.root_values = dict(before)
+                compile_statements(statement.orelse)
+                false_values = dict(emitter.root_values)
+                merged = dict(before)
+                for name in sorted((set(true_values) | set(false_values)) - set(before)):
+                    if name not in true_values or name not in false_values:
+                        continue
+                    true_value, true_type = true_values[name]
+                    false_value, false_type = false_values[name]
+                    if not _types_equal_in_epoch_05(true_type, false_type):
+                        raise QueueFrontendError(
+                            f"ACPY-HELPER-005: helper {definition.function_name!r} "
+                            f"branches assign different types to {name!r}"
+                        )
+                    selected = emitter._new()
+                    emitter.lines.append(
+                        f"    %{selected} = ac.var.select %{condition}, "
+                        f"%{true_value}, %{false_value} : !ac.var<i1>, "
+                        f"!ac.var<{_render_type(true_type)}> -> "
+                        f"!ac.var<{_render_type(true_type)}>"
+                    )
+                    merged[name] = emitter._remember(selected, true_type)
+                for name, previous in before.items():
+                    true_value = true_values[name]
+                    false_value = false_values[name]
+                    if true_value == false_value:
+                        merged[name] = true_value
+                        continue
+                    if not _types_equal_in_epoch_05(true_value[1], false_value[1]):
+                        raise QueueFrontendError(
+                            f"ACPY-HELPER-005: helper {definition.function_name!r} "
+                            f"branches assign different types to {name!r}"
+                        )
+                    selected = emitter._new()
+                    emitter.lines.append(
+                        f"    %{selected} = ac.var.select %{condition}, "
+                        f"%{true_value[0]}, %{false_value[0]} : !ac.var<i1>, "
+                        f"!ac.var<{_render_type(true_value[1])}> -> "
+                        f"!ac.var<{_render_type(true_value[1])}>"
+                    )
+                    merged[name] = emitter._remember(selected, true_value[1])
+                emitter.root_values = merged
+
+        compile_statements(definition.body[:-1])
+        result_values: list[tuple[str, ValueType]] = []
+        for node, expected in zip(result_nodes, definition.results, strict=True):
+            try:
+                value, value_type = emitter.emit(node, expected)
+            except QueueFrontendError as error:
+                if isinstance(node, ast.Name) and node.id not in emitter.root_values:
+                    raise QueueFrontendError(
+                        f"ACPY-HELPER-006: helper {definition.function_name!r} "
+                        f"returns local {node.id!r} that is not defined on every path"
+                    ) from error
+                raise
+            if not _types_equal_in_epoch_05(value_type, expected):
+                raise QueueFrontendError(
+                    f"ACPY-HELPER-005: helper {definition.function_name!r} "
+                    "result type mismatch"
+                )
+            result_values.append((value, value_type))
         arguments = ", ".join(
             f"%arg{index}: !ac.var<{_render_type(value_type)}>"
             for index, (_, value_type) in enumerate(definition.parameters)
         )
+        rendered_results = ", ".join(
+            f"!ac.var<{_render_type(value_type)}>" for value_type in definition.results
+        )
+        result_signature = (
+            rendered_results if len(definition.results) == 1 else f"({rendered_results})"
+        )
         lines.append(
             f"  func.func private @{definition.function_name}({arguments}) -> "
-            f"!ac.var<{_render_type(definition.result)}> attributes "
+            f"{result_signature} attributes "
             f"{{ac.helper = true, ac.inline = "
             f"{'true' if definition.inline else 'false'}}} {{"
         )
         lines.extend(emitter.lines)
         lines.append(
-            f"    return %{value} : !ac.var<{_render_type(definition.result)}>"
+            "    return "
+            + ", ".join(f"%{value}" for value, _ in result_values)
+            + " : "
+            + rendered_results
         )
         lines.append("  }")
     return lines
@@ -9678,13 +10039,20 @@ def lower_queue_program(
                     find.value_type,
                     None,
                 )
+            helper_call_results: dict[
+                int, tuple[tuple[str, ValueType], ...]
+            ] = {}
             for local in queue.rule_locals:
                 previous_deferred = (
                     None
                     if local.prior_name is None
                     else emitter.deferred_values.get(local.prior_name)
                 )
-                if local.guard is not None and previous_deferred is not None:
+                if (
+                    local.helper_call_group is None
+                    and local.guard is not None
+                    and previous_deferred is not None
+                ):
                     guard_expression: ast.expr = copy.deepcopy(local.guard)
                     if local.guard_negated:
                         guard_expression = ast.UnaryOp(
@@ -9699,7 +10067,7 @@ def lower_queue_program(
                     )
                     continue
                 local_static: StaticValue | None = None
-                if local.guard is None:
+                if local.guard is None and local.helper_call_group is None:
                     try:
                         local_static = evaluate_static(
                             local.value,
@@ -9730,7 +10098,23 @@ def lower_queue_program(
                         owner.value_type for owner in queue.rule_state_owners
                         if owner.argument == local.type_argument
                     )
-                local_value, local_type = emitter.emit(local.value, expected_local_type)
+                if local.helper_call_group is None:
+                    local_value, local_type = emitter.emit(
+                        local.value, expected_local_type
+                    )
+                else:
+                    assert local.helper_result_index is not None
+                    results = helper_call_results.get(local.helper_call_group)
+                    if results is None:
+                        if not isinstance(local.value, ast.Call):
+                            raise AssertionError("helper call local requires ast.Call")
+                        results = emitter.emit_helper_call(local.value)
+                        helper_call_results[local.helper_call_group] = results
+                    if local.helper_result_index >= len(results):
+                        raise QueueFrontendError(
+                            "ACPY-HELPER-004: helper result index is outside arity"
+                        )
+                    local_value, local_type = results[local.helper_result_index]
                 if previous is not None:
                     _, previous_type = previous
                     if not _types_equal_in_epoch_05(local_type, previous_type):

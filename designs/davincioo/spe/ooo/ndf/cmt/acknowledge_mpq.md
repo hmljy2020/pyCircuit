@@ -30,7 +30,7 @@ NDF format 0.2，L2 微架构。条款为本地 draft，尚未完成项目 ID �
 
 以下为 [cmt.py](../../cmt.py) 中的完整 `acknowledge_mpq` 规则片段，位于 `cmt` 模块内部；
 模块状态声明、共享类型及其他规则见实现文件，片段不作为独立模块运行。
-该功能逻辑已通过 [CMT 单模块验收](../../../../../../docs/gates/logs/20260909-cmt-history-loop/summary.md)；源码中的 NDF 注释标记对应本文件的 `doc_id`。
+该功能逻辑已通过 [CMT 单模块验收](../../../../../../docs/gates/logs/20260910-structured-helper-functions/summary.md)；源码中的 NDF 注释标记对应本文件的 `doc_id`。
 
 ```python
 @ac.inline
@@ -38,8 +38,16 @@ def increment_saturated_u16(value: ac.u16) -> ac.u16:
     return value + 1 if value != 65535 else value
 
 
-def next_diagnostic_count(valid: bool, value: ac.u16) -> ac.u16:
-    return increment_saturated_u16(value) if valid else 1
+def next_diagnostic_state(
+    valid: bool, count: ac.u16, overflow: bool, dropped: ac.u16
+) -> tuple[ac.u16, bool, ac.u16]:
+    if valid:
+        count = increment_saturated_u16(count)
+        overflow = True
+        dropped = increment_saturated_u16(dropped)
+    else:
+        count = 1
+    return count, overflow, dropped
 
 
 def same_handoff_identity(
@@ -114,13 +122,14 @@ def acknowledge_mpq(response):
     )
     if bad:
         old = diagnostics[1]
-        amount = next_diagnostic_count(old.valid, old.coalesced_count)
-        diagnostic_overflow[1] = diagnostic_overflow[1] or old.valid
-        diagnostic_dropped[1] = (
-            increment_saturated_u16(diagnostic_dropped[1])
-            if old.valid
-            else diagnostic_dropped[1]
+        amount, overflow, dropped = next_diagnostic_state(
+            old.valid,
+            old.coalesced_count,
+            diagnostic_overflow[1],
+            diagnostic_dropped[1],
         )
+        diagnostic_overflow[1] = overflow
+        diagnostic_dropped[1] = dropped
         diagnostics[1] = HandoffDiagnostic(
             owner_mask=HANDOFF_OWNER_MPQ,
             epoch=request.epoch,

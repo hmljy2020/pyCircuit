@@ -8027,3 +8027,50 @@ value helpers.
 **Source**
 - User-reviewed FW-0006 implementation plan (2026-09-09).
 - DavinciOO CMT at `designs/davincioo/spe/ooo/cmt.py`.
+
+## Decision 0230: pure helpers admit structured SSA bodies and fixed multiple results
+
+**Status:** Accepted; implemented and verified
+
+**Context / Goal**
+Decision 0229 established typed pure helpers but limited them to one return
+expression and one result. DavinciOO rules still repeat related combinational
+updates because local calculation, branch joins and correlated results cannot
+be expressed inside one helper.
+
+**Decision (strong constraint)**
+- A helper may contain local name assignment, exact-type rebinding and finite
+  nested `if`/`elif`/`else`, followed by one final return. Local record field
+  assignment is an immutable value update under Decision 0221. Branches lower
+  to SSA `ac.var.select`; a value used after a branch must be defined on every
+  path. Early return, loops, augmented or chained assignment, persistent state,
+  Queue/Table operations and effects remain invalid.
+- A helper result annotation is either one supported value type or a fixed
+  `tuple[T0, ...]` containing at least two supported result types. Multiple
+  results lower to multiple `func.call` SSA results and require exact direct
+  unpacking into local names in a helper or rule. A multiple-result call cannot
+  be stored as one value, indexed, nested in another expression or passed
+  without unpacking.
+- ACIR verifies one or more exact `ac.var` results and inlines every result of
+  an `ac.inline` call. Ordinary helpers remain one QueueGraph/gfsim C++ call;
+  C++ uses `std::tuple` for multiple results. PYC expands a helper body once per
+  call and maps every yield. All forms remain pure combinational logic without
+  state, cycles, Queue boundaries or rule commit boundaries.
+
+**Required verification**
+- Frontend tests cover structured locals, branch joins, direct unpacking,
+  nested calls and deterministic rejection of partial definitions and illegal
+  result use.
+- ACIR tests cover multiple-result verification and complete inline
+  replacement. QueueGraph tests prove one C++ call, compiling generated C++ and
+  one-pass PYC expansion for all results.
+- DavinciOO CMT shares its diagnostic count, overflow and dropped-count update
+  through one structured multiple-result helper while preserving its nine
+  single-module gfsim scenarios and replay output.
+
+**Verification**
+- `docs/gates/logs/20260910-structured-helper-functions/summary.md`
+
+**Source**
+- User-approved FW-0006 upgrade plan (2026-09-10).
+- Decision 0229 and `docs/framework-issues/FW-0006-pure-helper-functions.md`.

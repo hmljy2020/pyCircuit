@@ -483,8 +483,34 @@ extractExpressions(mlir::Region &region, QueueBlockPlan &plan,
       continue;
     }
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(operation)) {
-      if (auto error = append(operation, "call", call.getCallee()))
-        return error;
+      if (call.getNumResults() == 0)
+        return planError("pure helper call must produce at least one result");
+      auto operands = operandNames(call.getOperands());
+      if (!operands)
+        return operands.takeError();
+      QueueExpressionPlan expression;
+      expression.kind = "call";
+      expression.field = call.getCallee().str();
+      expression.operands = std::move(*operands);
+      const std::string base =
+          prefix.str() + std::to_string(plan.expressions.size());
+      for (auto [index, resultValue] : llvm::enumerate(call.getResults())) {
+        auto resultType = mlir::dyn_cast<ac::VarType>(resultValue.getType());
+        if (!resultType)
+          return planError("pure helper call result must be ac.var");
+        std::string result =
+            index == 0 ? base : base + "_result" + std::to_string(index);
+        std::string type = printType(resultType.getElementType());
+        values[resultValue] = result;
+        if (index == 0) {
+          expression.result = std::move(result);
+          expression.type = std::move(type);
+        } else {
+          expression.additionalResults.push_back(std::move(result));
+          expression.additionalResultTypes.push_back(std::move(type));
+        }
+      }
+      plan.expressions.push_back(std::move(expression));
       continue;
     }
     if (auto value = mlir::dyn_cast<ac::VarEnumOp>(operation)) {
@@ -1297,12 +1323,14 @@ private:
           return planError("helper parameter must be ac.var");
         helper.parameterTypes.push_back(printType(variable.getElementType()));
       }
-      if (function.getNumResults() != 1)
-        return planError("helper must have one result");
-      auto result = mlir::dyn_cast<ac::VarType>(function.getResultTypes().front());
-      if (!result)
-        return planError("helper result must be ac.var");
-      helper.resultType = printType(result.getElementType());
+      if (function.getNumResults() == 0)
+        return planError("helper must have at least one result");
+      for (mlir::Type type : function.getResultTypes()) {
+        auto result = mlir::dyn_cast<ac::VarType>(type);
+        if (!result)
+          return planError("helper result must be ac.var");
+        helper.resultTypes.push_back(printType(result.getElementType()));
+      }
       if (auto error = extractExpressions(function.getBody(), helper.body))
         return error;
       plan.helpers.push_back(std::move(helper));
@@ -2620,7 +2648,8 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
   llvm::StringMap<const QueueHelperPlan *> helpers;
   for (const QueueHelperPlan &helper : plan.helpers)
     if (helper.name.empty() || helper.parameterTypes.empty() ||
-        helper.resultType.empty() || helper.body.yields.size() != 1 ||
+        helper.resultTypes.empty() ||
+        helper.body.yields.size() != helper.resultTypes.size() ||
         !helpers.try_emplace(helper.name, &helper).second)
       return planError("helper metadata is incomplete or duplicated");
   auto valueWidth = [&](llvm::StringRef type) -> std::optional<uint64_t> {
@@ -3070,9 +3099,22 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
                             : rootPrefix.str() + std::to_string(index)] = type;
     for (const QueueExpressionPlan &expression : expressions) {
       if (expression.result.empty() || expression.type.empty() ||
-          valueTypes.contains(expression.result))
+          valueTypes.contains(expression.result) ||
+          expression.additionalResults.size() !=
+              expression.additionalResultTypes.size())
         return planError(
             "expression identities and result types must be closed");
+      llvm::StringSet<> expressionResults;
+      expressionResults.insert(expression.result);
+      for (auto [result, type] : llvm::zip_equal(
+               expression.additionalResults,
+               expression.additionalResultTypes))
+        if (result.empty() || type.empty() || valueTypes.contains(result) ||
+            !expressionResults.insert(result).second)
+          return planError(
+              "expression identities and result types must be closed");
+      if (expression.kind != "call" && !expression.additionalResults.empty())
+        return planError("only helper calls may produce multiple results");
       if (expression.kind == "invariant")
         return planError(
             "residual ac.var.invariant must be lowered before QueueGraph "
@@ -3202,7 +3244,12 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
       } else if (expression.kind == "call") {
         const QueueHelperPlan *helper = helpers.lookup(expression.field);
         if (!helper || expression.operands.size() != helper->parameterTypes.size() ||
-            expression.type != helper->resultType)
+            helper->resultTypes.size() !=
+                expression.additionalResultTypes.size() + 1 ||
+            expression.type != helper->resultTypes.front() ||
+            !std::equal(expression.additionalResultTypes.begin(),
+                        expression.additionalResultTypes.end(),
+                        helper->resultTypes.begin() + 1))
           return planError("helper call metadata is inconsistent");
         for (auto [operandName, expectedType] :
              llvm::zip_equal(expression.operands, helper->parameterTypes)) {
@@ -3419,6 +3466,12 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
       }
       valueTypes[expression.result] = expression.type;
       valueDefinitions[expression.result] = &expression;
+      for (auto [result, type] : llvm::zip_equal(
+               expression.additionalResults,
+               expression.additionalResultTypes)) {
+        valueTypes[result] = type;
+        valueDefinitions[result] = &expression;
+      }
       if (!expression.nestedExpressions.empty()) {
         const TablePlan *table = tables.lookup(expression.table);
         llvm::SmallVector<std::string> nestedRoots;
@@ -3441,33 +3494,39 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
     return llvm::Error::success();
   };
 
+  auto helperYieldType = [](const QueueHelperPlan &helper,
+                            llvm::StringRef yield)
+      -> std::optional<llvm::StringRef> {
+    if (yield == "item")
+      return helper.parameterTypes.front();
+    if (yield.starts_with("item")) {
+      unsigned index = 0;
+      if (!yield.drop_front(4).getAsInteger(10, index) &&
+          index < helper.parameterTypes.size())
+        return helper.parameterTypes[index];
+    }
+    for (const QueueExpressionPlan &expression : helper.body.expressions) {
+      if (expression.result == yield)
+        return expression.type;
+      for (auto [result, type] : llvm::zip_equal(
+               expression.additionalResults,
+               expression.additionalResultTypes))
+        if (result == yield)
+          return type;
+    }
+    return std::nullopt;
+  };
   for (const QueueHelperPlan &helper : plan.helpers) {
     if (auto error = verifyExpressionList(verifyExpressionList,
                                           helper.body.expressions,
                                           helper.parameterTypes, "item", {}))
       return error;
-    llvm::StringRef yield = helper.body.yields.front();
-    if (yield == "item") {
-      if (helper.parameterTypes.front() != helper.resultType)
+    for (auto [yield, expected] :
+         llvm::zip_equal(helper.body.yields, helper.resultTypes)) {
+      auto actual = helperYieldType(helper, yield);
+      if (!actual || *actual != expected)
         return planError("helper yield type is inconsistent");
-      continue;
     }
-    if (yield.starts_with("item")) {
-      unsigned index = 0;
-      if (!yield.drop_front(4).getAsInteger(10, index) &&
-          index < helper.parameterTypes.size()) {
-        if (helper.parameterTypes[index] != helper.resultType)
-          return planError("helper yield type is inconsistent");
-        continue;
-      }
-    }
-    auto result = llvm::find_if(helper.body.expressions,
-                                [&](const QueueExpressionPlan &expression) {
-      return expression.result == yield;
-    });
-    if (result == helper.body.expressions.end() ||
-        result->type != helper.resultType)
-      return planError("helper yield type is inconsistent");
   }
   llvm::StringSet<> activeHelpers;
   llvm::StringSet<> verifiedHelpers;
@@ -3517,6 +3576,12 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
       types[expression.result] = expression.type;
       constraints[expression.result] =
           inferPlanConstraint(expression, constraints, types, tables);
+      for (auto [result, type] : llvm::zip_equal(
+               expression.additionalResults,
+               expression.additionalResultTypes)) {
+        types[result] = type;
+        constraints[result] = planTypeConstraint(type);
+      }
       if (expression.kind == "table_get") {
         const TablePlan *table = tables.lookup(expression.table);
         auto index = expression.operands.size() == 1
@@ -3594,6 +3659,12 @@ llvm::Error verifyQueueGraphPlan(const QueueGraphPlan &plan) {
       identities[expression.result] = expression.type;
       constraints[expression.result] =
           inferPlanConstraint(expression, constraints, identities, tables);
+      for (auto [result, type] : llvm::zip_equal(
+               expression.additionalResults,
+               expression.additionalResultTypes)) {
+        identities[result] = type;
+        constraints[result] = planTypeConstraint(type);
+      }
     }
     auto verifySafeIndex = [&](llvm::StringRef identity,
                                const TablePlan &table) -> bool {
@@ -4026,6 +4097,12 @@ llvm::Expected<std::string> QueueGraphPlan::canonicalJson() const {
     llvm::json::Array nestedYields;
     for (const std::string &yield : expression.nestedYields)
       nestedYields.push_back(yield);
+    llvm::json::Array additionalResults;
+    for (const std::string &item : expression.additionalResults)
+      additionalResults.push_back(item);
+    llvm::json::Array additionalResultTypes;
+    for (const std::string &item : expression.additionalResultTypes)
+      additionalResultTypes.push_back(item);
     llvm::json::Object result{{"field", expression.field},
                               {"kind", expression.kind},
                               {"literal", expression.literal},
@@ -4037,6 +4114,10 @@ llvm::Expected<std::string> QueueGraphPlan::canonicalJson() const {
                               {"slot", expression.slot},
                               {"table", expression.table},
                               {"type", expression.type}};
+    if (!expression.additionalResults.empty()) {
+      result["additional_results"] = std::move(additionalResults);
+      result["additional_result_types"] = std::move(additionalResultTypes);
+    }
     if (expression.kind == "bit_extract" || expression.kind == "bit_insert" ||
         expression.kind == "aggregate_get")
       result["lsb"] = expression.lsb;
@@ -4090,12 +4171,18 @@ llvm::Expected<std::string> QueueGraphPlan::canonicalJson() const {
     llvm::json::Array expressions;
     for (const QueueExpressionPlan &expression : helper.body.expressions)
       expressions.push_back(expressionJson(expressionJson, expression));
+    llvm::json::Array results;
+    for (const std::string &type : helper.resultTypes)
+      results.push_back(type);
+    llvm::json::Array yields;
+    for (const std::string &yield : helper.body.yields)
+      yields.push_back(yield);
     helperValues.push_back(llvm::json::Object{
         {"expressions", std::move(expressions)},
         {"name", helper.name},
         {"parameter_types", std::move(parameters)},
-        {"result_type", helper.resultType},
-        {"yield", helper.body.yields.front()}});
+        {"result_types", std::move(results)},
+        {"yields", std::move(yields)}});
   }
   llvm::json::Array scopeValues;
   for (const std::string &scope : scopes)

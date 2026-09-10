@@ -34,17 +34,17 @@ LogicalResult verifyHelperBody(func::FuncOp function,
     return function.emitOpError(
         "pure helper must be private with one defined block");
   FunctionType type = function.getFunctionType();
-  if (type.getNumInputs() == 0 || type.getNumResults() != 1 ||
+  if (type.getNumInputs() == 0 || type.getNumResults() == 0 ||
       llvm::any_of(type.getInputs(),
                    [](Type value) { return !isa<ac::VarType>(value); }) ||
-      !isa<ac::VarType>(type.getResult(0)))
+      llvm::any_of(type.getResults(),
+                   [](Type value) { return !isa<ac::VarType>(value); }))
     return function.emitOpError(
-        "pure helper requires ac.var parameters and one ac.var result");
+        "pure helper requires ac.var parameters and one or more ac.var results");
   auto returned = dyn_cast<func::ReturnOp>(function.getBody().front().back());
-  if (!returned || returned.getNumOperands() != 1 ||
-      returned.getOperand(0).getType() != type.getResult(0))
+  if (!returned || returned.getOperandTypes() != type.getResults())
     return function.emitOpError(
-        "pure helper must return one value matching its result type");
+        "pure helper return values must exactly match its result types");
 
   for (Operation &operation : function.getBody().front().without_terminator()) {
     if (auto call = dyn_cast<func::CallOp>(operation)) {
@@ -143,7 +143,7 @@ FailureOr<llvm::StringMap<HelperNode>> collectAndVerify(ModuleOp model) {
 LogicalResult inlineOne(func::CallOp call, func::FuncOp callee) {
   Block &body = callee.getBody().front();
   if (call.getNumOperands() != body.getNumArguments() ||
-      call.getNumResults() != 1)
+      call.getNumResults() != callee.getNumResults())
     return call.emitOpError("pure helper call signature is malformed");
   IRMapping mapping;
   for (auto [argument, value] :
@@ -153,8 +153,9 @@ LogicalResult inlineOne(func::CallOp call, func::FuncOp callee) {
   for (Operation &operation : body.without_terminator())
     builder.clone(operation, mapping);
   auto returned = cast<func::ReturnOp>(body.getTerminator());
-  Value replacement = mapping.lookupOrDefault(returned.getOperand(0));
-  call.getResult(0).replaceAllUsesWith(replacement);
+  for (auto [result, returnedValue] :
+       llvm::zip_equal(call.getResults(), returned.getOperands()))
+    result.replaceAllUsesWith(mapping.lookupOrDefault(returnedValue));
   call.erase();
   return success();
 }

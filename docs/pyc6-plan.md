@@ -581,6 +581,10 @@ PYC semantic contracts.
       helpers as verified `func.call` through QueueGraph and C++, expand
       `@ac.inline` in ACIR and expand ordinary helper bodies for scalar PYC;
       validate CMT identity and diagnostic helpers against its NDF and gfsim.
+    - [x] Add Decision 0230 structured pure helpers (FW-0006): lower local
+      assignments and finite branches to SSA/select, preserve fixed multiple
+      results through ACIR and one gfsim C++ call, expand all results once for
+      PYC, and validate the shared CMT diagnostic-state helper.
     - [x] Add Decision 0208's scalar same-owner join: introduce compiler-owned
       `ac.var.select`, produce one state proposal, and preserve gfsim/PYC mux
       parity without adding a Python primitive.

@@ -26,8 +26,19 @@ def increment_saturated_u16(value: ac.u16) -> ac.u16:
     return value + 1 if value != 65535 else value
 
 
-def next_diagnostic_count(valid: bool, value: ac.u16) -> ac.u16:
-    return increment_saturated_u16(value) if valid else 1
+def next_diagnostic_state(
+    valid: bool,
+    count: ac.u16,
+    overflow: bool,
+    dropped: ac.u16,
+) -> tuple[ac.u16, bool, ac.u16]:
+    if valid:
+        count = increment_saturated_u16(count)
+        overflow = True
+        dropped = increment_saturated_u16(dropped)
+    else:
+        count = 1
+    return count, overflow, dropped
 
 
 def same_handoff_identity(
@@ -184,13 +195,14 @@ def cmt(
         )
         if bad:
             old = diagnostics[1]
-            amount = next_diagnostic_count(old.valid, old.coalesced_count)
-            diagnostic_overflow[1] = diagnostic_overflow[1] or old.valid
-            diagnostic_dropped[1] = (
-                increment_saturated_u16(diagnostic_dropped[1])
-                if old.valid
-                else diagnostic_dropped[1]
+            amount, overflow, dropped = next_diagnostic_state(
+                old.valid,
+                old.coalesced_count,
+                diagnostic_overflow[1],
+                diagnostic_dropped[1],
             )
+            diagnostic_overflow[1] = overflow
+            diagnostic_dropped[1] = dropped
             diagnostics[1] = HandoffDiagnostic(
                 owner_mask=HANDOFF_OWNER_MPQ,
                 epoch=request.epoch,
@@ -236,13 +248,14 @@ def cmt(
             or durability_missing
         ):
             old = diagnostics[2]
-            amount = next_diagnostic_count(old.valid, old.coalesced_count)
-            diagnostic_overflow[2] = diagnostic_overflow[2] or old.valid
-            diagnostic_dropped[2] = (
-                increment_saturated_u16(diagnostic_dropped[2])
-                if old.valid
-                else diagnostic_dropped[2]
+            amount, overflow, dropped = next_diagnostic_state(
+                old.valid,
+                old.coalesced_count,
+                diagnostic_overflow[2],
+                diagnostic_dropped[2],
             )
+            diagnostic_overflow[2] = overflow
+            diagnostic_dropped[2] = dropped
             diagnostics[2] = HandoffDiagnostic(
                 owner_mask=HANDOFF_OWNER_BROB,
                 epoch=response.epoch,
@@ -288,13 +301,14 @@ def cmt(
         if not busy or bad:
             if bad:
                 old = diagnostics[0]
-                amount = next_diagnostic_count(old.valid, old.coalesced_count)
-                diagnostic_overflow[0] = diagnostic_overflow[0] or old.valid
-                diagnostic_dropped[0] = (
-                    increment_saturated_u16(diagnostic_dropped[0])
-                    if old.valid
-                    else diagnostic_dropped[0]
+                amount, overflow, dropped = next_diagnostic_state(
+                    old.valid,
+                    old.coalesced_count,
+                    diagnostic_overflow[0],
+                    diagnostic_dropped[0],
                 )
+                diagnostic_overflow[0] = overflow
+                diagnostic_dropped[0] = dropped
                 diagnostics[0] = HandoffDiagnostic(
                     owner_mask=0,
                     epoch=request.epoch,

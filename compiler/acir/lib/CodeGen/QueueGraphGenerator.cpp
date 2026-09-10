@@ -477,6 +477,9 @@ std::string matchExpressionValueKey(const QueueExpressionPlan &expression) {
   append(std::to_string(expression.width));
   append(expression.mask);
   append(expression.value);
+  append(std::to_string(expression.additionalResults.size()));
+  for (const std::string &type : expression.additionalResultTypes)
+    append(type);
   return result;
 }
 
@@ -506,20 +509,29 @@ emitExpressionBody(const QueueGraphPlan &plan, const QueueBlockPlan &block,
   needed.insert(yield);
   for (const std::string &name : additionalNeeded)
     needed.insert(name);
+  auto resultNeeded = [&](const QueueExpressionPlan &expression) {
+    return needed.contains(expression.result) ||
+           llvm::any_of(expression.additionalResults, [&](const std::string &name) {
+             return needed.contains(name);
+           });
+  };
   for (const QueueExpressionPlan &expression : llvm::reverse(block.expressions))
-    if (needed.contains(expression.result)) {
+    if (resultNeeded(expression)) {
       for (const std::string &operand : expression.operands)
         needed.insert(operand);
       if (expression.kind == "snapshot_set")
         needed.insert(expression.field);
     }
   llvm::StringMap<size_t> expressionPositions;
-  for (auto [index, expression] : llvm::enumerate(block.expressions))
+  for (auto [index, expression] : llvm::enumerate(block.expressions)) {
     expressionPositions[expression.result] = index;
+    for (const std::string &result : expression.additionalResults)
+      expressionPositions[result] = index;
+  }
   llvm::StringSet<> emittedTableMatches;
   for (auto [expressionIndex, expression] :
        llvm::enumerate(block.expressions)) {
-    if (!needed.contains(expression.result))
+    if (!resultNeeded(expression))
       continue;
     auto operand = [&](size_t index) -> llvm::Expected<llvm::StringRef> {
       if (index >= expression.operands.size())
@@ -544,10 +556,16 @@ emitExpressionBody(const QueueGraphPlan &plan, const QueueBlockPlan &block,
       continue;
     }
     if (expression.kind == "call") {
-      auto type = cppType(expression.type);
-      if (!type)
-        return type.takeError();
-      output << padding << "auto " << expression.result << " = helper_"
+      output << padding << "auto ";
+      if (expression.additionalResults.empty()) {
+        output << expression.result;
+      } else {
+        output << '[' << expression.result;
+        for (const std::string &result : expression.additionalResults)
+          output << ", " << result;
+        output << ']';
+      }
+      output << " = helper_"
              << identifier(expression.field) << '(';
       for (auto [index, operandName] : llvm::enumerate(expression.operands)) {
         if (index)
@@ -1212,11 +1230,26 @@ emitExpressionBody(const QueueGraphPlan &plan, const QueueBlockPlan &block,
 llvm::Error emitHelperFunctions(std::ostream &output,
                                 const QueueGraphPlan &plan) {
   auto emitSignature = [&](const QueueHelperPlan &helper) -> llvm::Error {
-    auto resultType = cppType(helper.resultType);
-    if (!resultType)
-      return resultType.takeError();
-    output << "static " << *resultType << " helper_" << identifier(helper.name)
-           << '(';
+    std::vector<std::string> resultTypes;
+    for (const std::string &typeName : helper.resultTypes) {
+      auto type = cppType(typeName);
+      if (!type)
+        return type.takeError();
+      resultTypes.push_back(std::move(*type));
+    }
+    output << "static ";
+    if (resultTypes.size() == 1)
+      output << resultTypes.front();
+    else {
+      output << "std::tuple<";
+      for (auto [index, type] : llvm::enumerate(resultTypes)) {
+        if (index)
+          output << ", ";
+        output << type;
+      }
+      output << '>';
+    }
+    output << " helper_" << identifier(helper.name) << '(';
     for (auto [index, typeName] : llvm::enumerate(helper.parameterTypes)) {
       auto type = cppType(typeName);
       if (!type)
@@ -1241,7 +1274,20 @@ llvm::Error emitHelperFunctions(std::ostream &output,
     if (auto error = emitSignature(helper))
       return error;
     output << " {\n";
-    auto body = emitExpressionBody(plan, helper.body, helper.body.yields.front(), 2);
+    std::string returnExpression;
+    if (helper.body.yields.size() > 1) {
+      llvm::raw_string_ostream rendered(returnExpression);
+      rendered << "std::make_tuple(";
+      for (auto [index, yield] : llvm::enumerate(helper.body.yields)) {
+        if (index)
+          rendered << ", ";
+        rendered << yield;
+      }
+      rendered << ')';
+    }
+    auto body = emitExpressionBody(
+        plan, helper.body, helper.body.yields.front(), 2, false, true,
+        llvm::ArrayRef(helper.body.yields).drop_front(), returnExpression);
     if (!body)
       return body.takeError();
     output << *body << "}\n\n";

@@ -52,6 +52,8 @@ struct QueueExpressionPlan {
   uint64_t width = 0;
   std::string mask;
   std::string value;
+  std::vector<std::string> additionalResults;
+  std::vector<std::string> additionalResultTypes;
 };
 
 std::string inlineTableChoiceContractKey(
@@ -146,7 +148,7 @@ struct QueueBlockPlan {
 struct QueueHelperPlan {
   std::string name;
   std::vector<std::string> parameterTypes;
-  std::string resultType;
+  std::vector<std::string> resultTypes;
   QueueBlockPlan body;
 };
 

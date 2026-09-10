@@ -1453,22 +1453,35 @@ def saturating_increment(value: ac.u16) -> ac.u16:
     return value + 1 if value != 65535 else value
 ```
 
-This first slice requires at least one parameter, explicit parameter and result
-types, and exactly one pure return expression, with an optional docstring.
+Helpers require at least one parameter, explicit parameter and result types,
+an optional docstring, and one final return. A body may contain local
+assignments, exact-type rebinding, and finite nested `if`/`elif`/`else`.
+Branches lower to SSA `ac.var.select` operations; every value used after a
+branch MUST be defined on every path. Local record field assignment follows
+the same immutable value-update rule as rule locals.
+
+A helper may return one value or a fixed `tuple[T0, ...]` of two or more
+results. Multiple results lower as multiple `func.call` SSA results and MUST be
+directly unpacked into the exact number of local names in a helper or rule.
+They are not a storable tuple value and cannot be indexed, nested in another
+expression, or passed without first unpacking.
+
 Calls may use positional or named arguments and may call another helper in the
 same source closure. The callee MUST be a statically resolved, unshadowed bare
 name. The helper graph MUST be finite and acyclic. Defaults, positional-only or
 keyword-only parameters, variadics, dynamic calls, external runtime captures,
-persistent state access, Queue/module operations, mutation and other effects
-are invalid. Statement bodies and loops are outside this slice.
+persistent state access, Queue/module operations, early returns, loops,
+augmented assignment and other effects are invalid.
 
 The frontend emits a private typed `func.func` marked `ac.helper` and typed
 `func.call` uses. An `@ac.inline` helper is additionally marked `ac.inline`;
 the ACIR pipeline MUST expand every such call and remove the definition before
 topology freeze. An ordinary helper remains in the QueueGraph plan and becomes
-a typed C++ helper call. PYC expands the same helper expression at each call
-site. Neither form introduces state, a cycle, a Queue boundary or a rule commit
-boundary. Downstream C++ optimization may still inline an ordinary helper.
+one typed C++ helper call; fixed multiple results use `std::tuple` and direct
+unpacking. PYC expands the same helper body once at each call site and maps all
+results. Neither form introduces state, a cycle, a Queue boundary or a rule
+commit boundary. Downstream C++ optimization may still inline an ordinary
+helper.
 
 Invalid examples:
 
