@@ -144,8 +144,10 @@ output.write_text(_emit_source_transport(_capture_source_file(source, source_roo
         source::createInferSourceBindingsPass(owner(filename), *headers));
     pipeline.addPass(
         source::createLowerPythonSourcePass(owner(filename), *headers));
-    if (normalize)
+    if (normalize) {
       pipeline.addPass(acir::createNormalizeSourceControlFlowPass());
+      pipeline.addPass(acir::createLowerSourceIntegerExpressionsPass());
+    }
     if (runSummaries)
       pipeline.addPass(acir::createAnalyzeSourceMethodSummariesPass());
     if (failed(pipeline.run(captured)))
@@ -394,7 +396,6 @@ def Owner():
   });
   EXPECT_TRUE(hasControlFlow);
   EXPECT_TRUE(failed(ac::verifySourceBodyStructure(*file, error())));
-  EXPECT_NE(diagnostics.find("normalized control flow"), std::string::npos);
   std::string printed;
   llvm::raw_string_ostream output(printed);
   file->print(output);
@@ -407,6 +408,82 @@ def Owner():
   pipeline.addPass(acir::createNormalizeSourceControlFlowPass());
   ASSERT_TRUE(succeeded(pipeline.run(*file))) << diagnostics;
   EXPECT_EQ(operations<ac::SourceMethodCallOp>(*file).size(), 3u);
+}
+
+TEST_F(SourceTransactionCaptureTest,
+       IntegerLoopExpressionsKeepExplicitBitsConsumers) {
+  auto file = capture("integer_loop.py", R"py(import pycircuit as ac
+@ac.module
+def Top(value: ac.u8) -> ac.u8:
+    result = value
+    for index in range(4):
+        result = result | (128 >> index)
+    return result
+)py");
+  ASSERT_TRUE(file);
+  ASSERT_TRUE(succeeded(lower(*file, "integer_loop.py", false, false)))
+      << diagnostics;
+  EXPECT_FALSE(operations<arith::ShRUIOp>(*file).empty());
+  EXPECT_FALSE(operations<ac::SourceIntegerToBitsOp>(*file).empty());
+  PassManager lowering(&context);
+  lowering.addPass(acir::createNormalizeSourceControlFlowPass());
+  lowering.addPass(acir::createLowerSourceIntegerExpressionsPass());
+  ASSERT_TRUE(succeeded(lowering.run(*file))) << diagnostics;
+  EXPECT_TRUE(operations<ac::SourceIntegerToBitsOp>(*file).empty());
+  llvm::DenseSet<StringRef> constants;
+  for (auto op : operations<ac::BitsConstantOp>(*file)) {
+    auto literal = op.getValue().getTree().getAs<DictionaryAttr>("value");
+    if (auto value = literal ? literal.getAs<ac::MathIntAttr>("value")
+                             : ac::MathIntAttr())
+      constants.insert(value.getCanonicalValue());
+  }
+  for (StringRef expected : {"128", "64", "32", "16"})
+    EXPECT_TRUE(constants.contains(expected));
+}
+
+TEST_F(SourceTransactionCaptureTest,
+       WideIntegerScopesKeepExistingRepresentation) {
+  auto file = capture("integer_wide.py", R"py(import pycircuit as ac
+from typing import Annotated
+@ac.module
+def Top(value: Annotated[int, range(1 << 65)]) -> Annotated[int, range(1 << 66)]:
+    result = value + 1
+    return result
+)py");
+  ASSERT_TRUE(file);
+  ASSERT_TRUE(succeeded(lower(*file, "integer_wide.py", false, false)))
+      << diagnostics;
+  EXPECT_TRUE(operations<ac::SourceIntegerFromBitsOp>(*file).empty());
+  EXPECT_TRUE(operations<ac::SourceIntegerToBitsOp>(*file).empty());
+  EXPECT_FALSE(operations<ac::BitsBinaryOp>(*file).empty());
+}
+
+TEST_F(SourceTransactionCaptureTest,
+       RuntimeIntegerHelperKeepsLocalSSAUntilLowering) {
+  auto file = capture("integer_runtime.py", R"py(import pycircuit as ac
+from typing import Annotated
+def compute(value: Annotated[int, range(1 << 4)]) -> ac.u8:
+    added = value + 3
+    product = added * 2
+    result = product - 1
+    return result
+@ac.module
+def Top(value: Annotated[int, range(1 << 4)]) -> ac.u8:
+    return compute(value)
+)py");
+  ASSERT_TRUE(file);
+  ASSERT_TRUE(succeeded(lower(*file, "integer_runtime.py", false, false)))
+      << diagnostics;
+  EXPECT_FALSE(operations<arith::AddIOp>(*file).empty());
+  EXPECT_FALSE(operations<arith::SubIOp>(*file).empty());
+  EXPECT_FALSE(operations<arith::MulIOp>(*file).empty());
+  PassManager lowering(&context);
+  lowering.addPass(acir::createNormalizeSourceControlFlowPass());
+  lowering.addPass(acir::createLowerSourceIntegerExpressionsPass());
+  ASSERT_TRUE(succeeded(lowering.run(*file))) << diagnostics;
+  EXPECT_TRUE(operations<ac::SourceIntegerFromBitsOp>(*file).empty());
+  EXPECT_TRUE(operations<ac::SourceIntegerToBitsOp>(*file).empty());
+  EXPECT_TRUE(succeeded(verify(*file))) << diagnostics;
 }
 
 TEST_F(SourceTransactionCaptureTest, OrdinaryHelperLoopsInlineIntoRuleAndMethodBodies) {

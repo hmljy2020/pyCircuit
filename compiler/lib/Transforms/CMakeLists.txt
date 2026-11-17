@@ -5,6 +5,7 @@
 add_acir_library(ACIRTransforms SOURCES
   PassRegistration.cpp
   NormalizeSourceControlFlow.cpp
+  LowerSourceIntegerExpressions.cpp
   ExtractSourceInterface.cpp
   SimplifyRecordWires.cpp
   AnalyzeSourceMethods.cpp

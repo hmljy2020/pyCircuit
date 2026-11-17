@@ -1066,6 +1066,11 @@ private:
                                     llvm::StringMap<Value> &moduleValues,
                                     llvm::StringMap<Instance *> &instances);
   DictionaryAttr namespaceSite(const AstNode &node);
+  FailureOr<bool> integerExpressionScope(FlatSymbolRefAttr ownerSymbol);
+  FailureOr<Value> integerCarrier(Value value, const AstNode &node,
+                                  OpBuilder &at, FlatSymbolRefAttr ownerSymbol);
+  Value integerBoundary(Value value, Type target, const AstNode &node,
+                        OpBuilder &at, FlatSymbolRefAttr ownerSymbol);
   NumericLoweringSite numericSite(const AstNode &node,
                                   FlatSymbolRefAttr ownerSymbol);
   std::optional<ac::detail::ValueKind> annotationKind(const AstNode &node);
@@ -1130,6 +1135,7 @@ private:
   // admissions belong to the exact source type and actual lexical Module.
   SmallVector<std::pair<std::pair<Type, Operation *>, Type>, 0>
       admittedBranchPayloads;
+  llvm::DenseMap<DictionaryAttr, bool> integerScopes;
   bool activeValueHelper = false;
   ValueHelperDecl *activeHelperFrame = nullptr;
   FlatSymbolRefAttr activeHelperLexicalOwner;
@@ -1309,6 +1315,8 @@ FailureOr<Value> Importer::boundary(Value value, const Port &destination,
       destination.sourceKind != info.sourceKind)
     return error()
            << "source Boolean and Integer kinds cannot be implicitly converted";
+  if (value.getType().isInteger(64) && isa<ac::BitsType>(destination.type))
+    return integerBoundary(value, destination.type, node, at, ownerSymbol);
   auto equivalent = equivalentBoundaryTypes(value.getType(), destination.type,
                                             at.getBlock()->getParentOp());
   if (failed(equivalent))
@@ -1843,6 +1851,8 @@ FailureOr<Value> Importer::applyBindingBoundary(Value value,
                   "type";
       return value;
     }
+    if (value.getType().isInteger(64))
+      return integerBoundary(value, contract.type, node, at, ownerSymbol);
     auto converted =
         lowerExactIntegerBoundary(at, numericSite(node, ownerSymbol), info,
                                   dyn_cast<ac::BitsType>(contract.type));
@@ -3398,11 +3408,181 @@ LogicalResult Importer::chargeSourceWalk(const AstNode &node,
   return success();
 }
 
+// Select a complete scalar callable before construction. Consumers that still
+// require importer-owned finite representations keep their existing route.
+FailureOr<bool> Importer::integerExpressionScope(FlatSymbolRefAttr ownerSymbol) {
+  if (diagnosticFailed) return failure();
+  AstNode scope;
+  if (activeHelperFrame)
+    scope = activeHelperFrame->node;
+  else
+    for (const auto &module : modules)
+      if (module.symbol == ownerSymbol)
+        scope = module.node;
+  if (!scope)
+    return false;
+  auto found = integerScopes.find(scope.value);
+  if (found != integerScopes.end())
+    return found->second;
+  ac::HardwareAnalysis analysis(*body);
+  auto supportedType = [&](Type type) {
+    auto bits = dyn_cast<ac::BitsType>(type);
+    if (!bits || !analysis.isStaticEvaluable(bits.getWidth(), {}))
+      return false;
+    auto width = analysis.getPackedWidth(type, {}, body->getOperation());
+    return succeeded(width) && *width <= 64;
+  };
+  auto supportedPorts = [&](ArrayRef<Port> ports) {
+    return llvm::all_of(
+        ports, [&](const Port &port) { return supportedType(port.type); });
+  };
+  bool signatures = true;
+  if (activeHelperFrame) {
+    signatures =
+        supportedPorts(activeHelperFrame->inputs) &&
+        supportedPorts(activeHelperFrame->results) &&
+        llvm::all_of(activeHelperFrame->captures, [&](const auto &capture) {
+          auto info = valueInfo(capture.second);
+          return supportedType(capture.second.getType()) &&
+              (info.sourceKind != ac::detail::ValueKind::Integer ||
+               info.interval || info.closedSourceConstant);
+        });
+  } else
+    for (const auto &module : modules)
+      if (module.symbol == ownerSymbol)
+        signatures = module.parameters.empty() &&
+                     supportedPorts(module.inputs) && supportedPorts(module.outputs);
+  if (!signatures) {
+    integerScopes[scope.value] = false;
+    return false;
+  }
+  auto supported = [&](auto &&self, Attribute attribute) -> bool {
+    TableQueryCharge charge;
+    std::string reason;
+    if (!TableQueryBudget::add(charge, TableQueryResource::Work, 1) ||
+        !queryBudget.reserve(charge, reason)) {
+      error() << "integer expression scope preflight budget exhausted: "
+              << reason;
+      return false;
+    }
+    if (auto array = dyn_cast<ArrayAttr>(attribute))
+      return llvm::all_of(array,
+                          [&](Attribute item) { return self(self, item); });
+    auto dict = dyn_cast<DictionaryAttr>(attribute);
+    if (!dict)
+      return true;
+    AstNode node{dict, {}};
+    if (node.kind() == "AnnAssign" &&
+        annotationKind(node.child("annotation")) ==
+            ac::detail::ValueKind::Integer) {
+      auto type = portType(node.child("annotation"), ownerSymbol);
+      if (failed(type) || !supportedType(*type))
+        return false;
+    }
+    if (llvm::is_contained(ArrayRef<StringRef>{"If", "IfExp", "Compare",
+                                               "BoolOp", "While", "Match",
+                                               "Subscript", "List", "Tuple",
+                                               "UnaryOp", "Assert", "Expr",
+                                               "Lambda", "FunctionDef"},
+                           node.kind()))
+      return false;
+    if (concatCall(node) || !fixedCountCall(node).empty() ||
+        !fixedResultCall(node).empty())
+      return false;
+    if (node.kind() == "Call" && node.child("func").kind() == "Attribute" &&
+        llvm::is_contained(
+            ArrayRef<StringRef>{"map", "fold", "all", "any", "count"},
+            node.child("func").string("attr")))
+      return false;
+    if (node.kind() == "BinOp" &&
+        !llvm::is_contained(ArrayRef<StringRef>{"Add", "Sub", "Mult", "BitAnd",
+                                                "BitOr", "BitXor", "RShift"},
+                            node.child("op").kind()))
+      return false;
+    if (auto fields = node.fields())
+      for (auto field : fields) {
+        if (llvm::is_contained(ArrayRef<StringRef>{"annotation", "returns",
+                                                   "args", "decorator_list"},
+                               field.getName().getValue()) &&
+            node.kind() != "Call")
+          continue;
+        if (!self(self, field.getValue()))
+          return false;
+      }
+    return true;
+  };
+  bool result = supported(supported, scope.get("body"));
+  if (diagnosticFailed) return failure();
+  integerScopes[scope.value] = result;
+  return result;
+}
+
+FailureOr<Value> Importer::integerCarrier(Value value, const AstNode &node,
+                                          OpBuilder &at,
+                                          FlatSymbolRefAttr ownerSymbol) {
+  if (value.getType().isInteger(64))
+    return value;
+  auto info = valueInfo(value);
+  if (info.sourceKind != ac::detail::ValueKind::Integer ||
+      fixedValues.contains(value))
+    return mlir::emitError(node.location(b.getContext(), source.path))
+           << "mathematical arithmetic requires Integer operands";
+  if (auto closed =
+          dyn_cast_or_null<ac::MathIntAttr>(info.closedSourceConstant)) {
+    llvm::APSInt number(closed.getCanonicalValue());
+    auto result = arith::ConstantOp::create(
+                      at, node.location(b.getContext(), source.path),
+                      IntegerAttr::get(at.getI64Type(), number.isNegative() ? number.sextOrTrunc(64) : number.zextOrTrunc(64)))
+                      .getResult();
+    remember(result, info.sourceKind, info.interval, closed);
+    (*body)->setAttr("ac.stage", at.getStringAttr("source-i64"));
+    return result;
+  }
+  if (!info.interval || !isa<ac::BitsType>(value.getType()))
+    return mlir::emitError(node.location(b.getContext(), source.path))
+           << "integer expression requires a declared finite range";
+  auto site = numericSite(node, ownerSymbol);
+  auto domain = at.getDictionaryAttr(
+      {at.getNamedAttr("lower", ac::MathIntAttr::get(at.getContext(),
+                                                     info.interval->lower)),
+       at.getNamedAttr("upper", ac::MathIntAttr::get(at.getContext(),
+                                                     info.interval->upper))});
+  auto result =
+      createOp(
+          at, site.location, "ac.source.integer_from_bits", {value},
+          TypeRange{at.getI64Type()},
+          {at.getNamedAttr("domain", domain),
+           at.getNamedAttr("is_signed",
+                           at.getBoolAttr(info.interval->lower.isNegative())),
+           at.getNamedAttr("occurrence", site.origin),
+           at.getNamedAttr("source_location", site.sourceSpan)})
+          ->getResult(0);
+  remember(result, info.sourceKind, info.interval, info.closedSourceConstant);
+  (*body)->setAttr("ac.stage", at.getStringAttr("source-i64"));
+  return result;
+}
+
+Value Importer::integerBoundary(Value value, Type target, const AstNode &node,
+                                OpBuilder &at, FlatSymbolRefAttr ownerSymbol) {
+  auto site = numericSite(node, ownerSymbol);
+  auto result = createOp(at, site.location, "ac.source.integer_to_bits",
+                         {value}, TypeRange{target},
+                         {at.getNamedAttr("occurrence", site.origin),
+                          at.getNamedAttr("source_location", site.sourceSpan)})
+                    ->getResult(0);
+  mapValueFacts(value, result);
+  return result;
+}
+
 FailureOr<Value> Importer::expression(
     const AstNode &node, OpBuilder &at, FlatSymbolRefAttr ownerSymbol,
     llvm::StringMap<Value> &values, llvm::StringMap<Instance *> &instances,
     std::optional<Type> expected,
     llvm::StringMap<SmallVector<Value>> *captures) {
+  auto integerScope = integerExpressionScope(ownerSymbol);
+  if (failed(integerScope)) return failure();
+  if (expected && expected->isInteger(64))
+    expected.reset();
   if (!captures && activeRule && activeRule->outputs)
     captures = activeRule->outputs;
   if (node.kind() == "Name" &&
@@ -3541,6 +3721,18 @@ FailureOr<Value> Importer::expression(
         return failure();
       if (auto integer = dyn_cast<ac::MathIntAttr>(*evaluated))
         known = llvm::APSInt(integer.getCanonicalValue());
+    }
+    if (known && !expected && *integerScope &&
+        known->getSignificantBits() <= 64) {
+      auto result =
+          arith::ConstantOp::create(
+              at, node.location(b.getContext(), source.path),
+              IntegerAttr::get(at.getI64Type(), known->isNegative() ? known->sextOrTrunc(64) : known->zextOrTrunc(64)))
+              .getResult();
+      remember(result, ValueKind::Integer, {},
+               ac::MathIntAttr::get(at.getContext(), *known));
+      (*body)->setAttr("ac.stage", at.getStringAttr("source-i64"));
+      return result;
     }
     Type type;
     if (expected && !known)
@@ -3802,6 +3994,40 @@ FailureOr<Value> Importer::expression(
         return fixedUnsignedShift(*input, *count,
                                   form == "LShift" ? "shl" : "lshr", node, at,
                                   ownerSymbol);
+      if (*integerScope) {
+        auto left = integerCarrier(*input, node, at, ownerSymbol);
+        if (failed(left))
+          return failure();
+        auto info = valueInfo(*input);
+        auto closed =
+            dyn_cast_or_null<ac::MathIntAttr>(info.closedSourceConstant);
+        bool nonnegative =
+            (info.interval && !info.interval->lower.isNegative()) ||
+            (closed && !llvm::APSInt(closed.getCanonicalValue()).isNegative());
+        // Resolve overshifts before constructing arith: its counts must stay
+        // below the carrier width even at the intermediate stage.
+        if (nonnegative && count->getLimitedValue(64) >= 64) {
+          auto zero = arith::ConstantOp::create(
+                          at, node.location(b.getContext(), source.path),
+                          at.getI64IntegerAttr(0))
+                          .getResult();
+          remember(zero, ValueKind::Integer, {},
+                   ac::MathIntAttr::get(at.getContext(),
+                                        llvm::APSInt::getUnsigned(0)));
+          return zero;
+        }
+        uint64_t shift = count->getLimitedValue(63);
+        auto amount = arith::ConstantOp::create(
+            at, node.location(b.getContext(), source.path),
+            at.getI64IntegerAttr(shift));
+        auto result = createOp(at, node.location(b.getContext(), source.path),
+                               nonnegative ? "arith.shrui" : "arith.shrsi",
+                               {*left, amount.getResult()},
+                               TypeRange{at.getI64Type()}, {})
+                          ->getResult(0);
+        remember(result, ValueKind::Integer);
+        return result;
+      }
       auto result = lowerExactIntegerShiftRight(
           at, numericSite(node, ownerSymbol), valueInfo(*input), *count);
       if (failed(result))
@@ -3883,6 +4109,21 @@ FailureOr<Value> Importer::expression(
       if (isa<ac::EnumType>(lhs->getType()) ||
           isa<ac::EnumType>(rhs->getType()))
         return error() << "Enum arithmetic requires explicit enum_to_bits";
+      if (*integerScope) {
+        auto left = integerCarrier(*lhs, node, at, ownerSymbol);
+        auto right = integerCarrier(*rhs, node, at, ownerSymbol);
+        if (failed(left) || failed(right))
+          return failure();
+        StringRef name = form == "Add"   ? "arith.addi"
+                         : form == "Sub" ? "arith.subi"
+                                         : "arith.muli";
+        auto result =
+            createOp(at, node.location(b.getContext(), source.path), name,
+                     {*left, *right}, TypeRange{at.getI64Type()}, {})
+                ->getResult(0);
+        remember(result, ValueKind::Integer);
+        return result;
+      }
       auto result = lowerExactIntegerBinary(at, numericSite(node, ownerSymbol),
                                             *arithmetic, valueInfo(*lhs),
                                             valueInfo(*rhs));
@@ -3939,6 +4180,24 @@ FailureOr<Value> Importer::expression(
       return failure();
     if (isa<ac::EnumType>(lhs->getType()) || isa<ac::EnumType>(rhs->getType()))
       return error() << "Enum bitwise operations require explicit enum_to_bits";
+    if (*integerScope && !fixedValues.contains(*lhs) &&
+        !fixedValues.contains(*rhs) &&
+        valueInfo(*lhs).sourceKind == ValueKind::Integer &&
+        valueInfo(*rhs).sourceKind == ValueKind::Integer) {
+      auto left = integerCarrier(*lhs, node, at, ownerSymbol);
+      auto right = integerCarrier(*rhs, node, at, ownerSymbol);
+      if (failed(left) || failed(right))
+        return failure();
+      StringRef name = form == "BitAnd"  ? "arith.andi"
+                       : form == "BitOr" ? "arith.ori"
+                                         : "arith.xori";
+      auto result =
+          createOp(at, node.location(b.getContext(), source.path), name,
+                   {*left, *right}, TypeRange{at.getI64Type()}, {})
+              ->getResult(0);
+      remember(result, ValueKind::Integer);
+      return result;
+    }
     if (failed(normalizeFixedIntegerPeer(*lhs, *rhs, node, at, ownerSymbol,
                                          /*requireClosed=*/false)))
       return failure();
@@ -6454,6 +6713,8 @@ FailureOr<OwningOpRef<ModuleOp>> Importer::lower() {
   });
   (*body)->setAttr("ac.exports", b.getArrayAttr(exports));
   (*body)->setAttr("ac.import_bindings", b.getArrayAttr(imports));
+  if (diagnosticFailed)
+    return failure();
   return std::move(body);
 }
 

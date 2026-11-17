@@ -651,6 +651,8 @@ LogicalResult Importer::prepayLoopAnalysis(const AstNode &site) {
 FailureOr<uint64_t> Importer::loopStorageWords(Type type,
                                                ac::HardwareAnalysis &analysis,
                                                const AstNode &site) {
+  if (type.isInteger(64))
+    return uint64_t(1);
   auto visit = [&]() {
     return chargeLoopDescriptorWork(site, "storage type visit");
   };
@@ -709,6 +711,8 @@ Importer::loopTypeShape(Type type, const AstNode &site,
         result.precision = std::max(result.precision, field->precision);
         result.fields = std::max(result.fields, field->fields);
       }
+    } else if (current.isInteger(64)) {
+      result.precision = 64;
     } else {
       auto width = analysis.getPackedWidth(current, {}, body->getOperation());
       if (failed(width) || !*width)
@@ -733,7 +737,11 @@ FailureOr<LoopResourceShape> Importer::describeLoopExpression(
   };
   if (!pureCheckedAdd(envelope.nodes, 1))
     return failure();
+  auto integerScope = integerExpressionScope(symbol);
+  if (failed(integerScope)) return failure();
   auto include = [&](LoopResourceShape shape) -> FailureOr<LoopResourceShape> {
+    if (*integerScope)
+      envelope.precision = std::max(envelope.precision, uint64_t(64));
     envelope.precision = std::max(envelope.precision, shape.precision);
     envelope.words = std::max(envelope.words, shape.words);
     envelope.operands = std::max(envelope.operands, shape.fields);

@@ -101,7 +101,7 @@ add_acir_api_test(ACIRSourceInterfacePassTests SourceInterfacePassTest.cpp
   SourcePrimitiveValueResultsTest.cpp
   SourceMemoryBindingsTest.cpp TableQuerySourceTest.cpp
   SourceTransactionCaptureTest.cpp SourceHelperAuthorityTest.cpp
-  SourceControlFlowTest.cpp)
+  SourceControlFlowTest.cpp SourceIntegerExpressionsTest.cpp)
 target_compile_definitions(ACIRSourceInterfacePassTests PRIVATE
   PYCIRCUIT_TEST_PYTHON="${Python3_EXECUTABLE}"
   PYCIRCUIT_TEST_REPO_ROOT="${PYCIRCUIT_REPO_ROOT}")

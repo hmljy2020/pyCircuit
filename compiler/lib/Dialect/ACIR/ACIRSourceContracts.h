@@ -51,6 +51,8 @@ struct ObservationLocalKey {
 /// other region owner (including guards and pure helpers) never acquires it.
 bool isSourceControlRegion(mlir::Region &region);
 bool isSourceControlComputation(mlir::Operation *operation);
+/// Temporary i64 expression transport is admitted only in source-i64 packages.
+bool isSourceIntegerComputation(mlir::Operation *operation);
 mlir::Operation *sourceEffectCallable(mlir::Operation *operation,
                                       bool allowReads = false);
 mlir::LogicalResult verifySourceObservationStructure(SourceObserveOp observe);

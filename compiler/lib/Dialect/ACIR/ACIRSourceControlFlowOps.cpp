@@ -4,6 +4,27 @@
 using namespace mlir;
 
 namespace acir::ac {
+LogicalResult SourceIntegerFromBitsOp::verify() {
+  if (failed(detail::verifyOccurrence(getOccurrence(),
+                                      [&] { return emitOpError(); })) ||
+      failed(detail::verifySourceSpan(getSourceLocation(),
+                                      [&] { return emitOpError(); })))
+    return failure();
+  if (!getDomain().getAs<MathIntAttr>("lower") ||
+      !getDomain().getAs<MathIntAttr>("upper"))
+    return emitOpError() << "requires a finite declared Integer domain";
+  return success();
+}
+
+LogicalResult SourceIntegerToBitsOp::verify() {
+  if (failed(detail::verifyOccurrence(getOccurrence(),
+                                      [&] { return emitOpError(); })) ||
+      failed(detail::verifySourceSpan(getSourceLocation(),
+                                      [&] { return emitOpError(); })))
+    return failure();
+  return success();
+}
+
 LogicalResult SourceIndexOp::verify() {
   if (failed(detail::verifyOccurrence(getOccurrence(),
                                       [&] { return emitOpError(); })) ||

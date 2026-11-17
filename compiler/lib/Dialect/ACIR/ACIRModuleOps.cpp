@@ -33,6 +33,24 @@ bool isCombinationalHardwareOperation(Operation *operation) {
       operation);
 }
 
+bool isSourceIntegerComputation(Operation *operation) {
+  auto package = operation->getParentOfType<mlir::ModuleOp>();
+  auto stage = package ? package->getAttrOfType<StringAttr>("ac.stage")
+                       : StringAttr();
+  if (!stage || stage.getValue() != "source-i64")
+    return false;
+  if (isa<SourceIntegerFromBitsOp, SourceIntegerToBitsOp>(operation))
+    return true;
+  if (!isa<arith::ConstantOp, arith::AddIOp, arith::SubIOp,
+           arith::MulIOp, arith::AndIOp, arith::OrIOp, arith::XOrIOp,
+           arith::ShRSIOp, arith::ShRUIOp>(operation))
+    return false;
+  return llvm::all_of(operation->getOperandTypes(),
+                      [](Type type) { return type.isSignlessInteger(64); }) &&
+         operation->getNumResults() == 1 &&
+         operation->getResult(0).getType().isSignlessInteger(64);
+}
+
 LogicalResult verifyModuleSignature(Operation *op) {
   if (op->hasAttr("output_kinds"))
     return op->emitOpError("output_kinds requires the transactional version 2 contract");
@@ -127,7 +145,8 @@ LogicalResult body(Operation *op, TypeRange inputs, TypeRange outputs) {
   for (Operation &nested : block.without_terminator()) {
     if (isa<YieldOp>(nested))
       return op->emitOpError() << "early yield is invalid";
-    if (isa<RuleOp>(op) && !detail::isCombinationalHardwareOperation(&nested))
+    if (isa<RuleOp>(op) && !detail::isCombinationalHardwareOperation(&nested) &&
+        !detail::isSourceIntegerComputation(&nested))
       return nested.emitOpError()
              << "rule accepts only closed combinational hardware operations";
   }
@@ -321,7 +340,8 @@ bool isSourceControlRegion(Region &region) {
          (isa<scf::ExecuteRegionOp>(owner) && region.hasOneBlock());
 }
 bool isSourceControlComputation(Operation *operation) {
-  return isa<arith::ConstantOp, arith::AddIOp, arith::SubIOp,
+  return isSourceIntegerComputation(operation) ||
+         isa<arith::ConstantOp, arith::AddIOp, arith::SubIOp,
              arith::MulIOp, arith::CmpIOp, arith::IndexCastOp,
              arith::AndIOp, arith::OrIOp, arith::XOrIOp,
              scf::YieldOp, scf::ConditionOp, SourceIndexOp,

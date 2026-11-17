@@ -67,6 +67,7 @@ LogicalResult preflightBody(func::FuncOp helper, SourceHelperLookup lookup,
                                            "explicit inputs and captures";
       }
       if (!isa<func::CallOp, func::ReturnOp, YieldOp>(operation) &&
+          !detail::isSourceIntegerComputation(&operation) &&
           !detail::isCombinationalHardwareOperation(&operation))
         return operation.emitOpError() << "unsupported operation in pure value "
                                          "helper body";
@@ -230,6 +231,8 @@ LogicalResult verifyBody(func::FuncOp helper, SourceHelperLookup lookup,
         continue;
       }
       bool hardware = detail::isCombinationalHardwareOperation(&operation);
+      if (detail::isSourceIntegerComputation(&operation))
+        continue;
       if (!hardware)
         return operation.emitOpError() << "unsupported operation in pure value "
                                          "helper body";
