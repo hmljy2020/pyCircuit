@@ -8,8 +8,8 @@ if (node.kind() == "Call" && intrinsic(node.child("func"), "four_state")) {
                TypeRange{internalBits(pattern->size(), node, ownerSymbol)},
                {at.getNamedAttr("pattern", at.getStringAttr(pattern->lower()))})
           ->getResult(0);
-  remember(result, std::nullopt);
-  fixedValues.insert(result);
+  { if (failed(remember(result, std::nullopt))) return failure(); }
+  { if (failed(markFixed(result))) return failure(); }
   return result;
 }
 if (node.kind() == "Call" && (intrinsic(node.child("func"), "case_eq") ||
@@ -30,8 +30,8 @@ if (node.kind() == "Call" && (intrinsic(node.child("func"), "case_eq") ||
   if (failed(rhs))
     return failure();
   if (!isa<ac::BitsType>(lhs->getType()) ||
-      !isa<ac::BitsType>(rhs->getType()) || !fixedValues.contains(*lhs) ||
-      !fixedValues.contains(*rhs) ||
+      !isa<ac::BitsType>(rhs->getType()) || !valueFacts.isFixed(*lhs) ||
+      !valueFacts.isFixed(*rhs) ||
       !ac::areEquivalentHardwareTypes(lhs->getType(), rhs->getType()))
     return error()
            << "four-state observer requires equal-width fixed Bits operands";
@@ -57,7 +57,7 @@ if (node.kind() == "Call" && (intrinsic(node.child("func"), "case_eq") ||
       at.getStringAttr(known ? "is_known" : "case_eq"));
   result.getDefiningOp()->setAttr("ac.origin",
                                   sourceOccurrence(at, ownerSymbol, node));
-  remember(result, ValueKind::Boolean);
+  { if (failed(remember(result, ValueKind::Boolean))) return failure(); }
   return result;
 }
 // Memory handles are static identities; all data accesses are Rule operations.
@@ -115,7 +115,7 @@ if (concatCall(node)) {
                             captures);
     if (failed(value))
       return failure();
-    if (!isa<ac::BitsType>(value->getType()) || !fixedValues.contains(*value))
+    if (!isa<ac::BitsType>(value->getType()) || !valueFacts.isFixed(*value))
       return mlir::emitError(operand.location(b.getContext(), source.path))
              << "concat operand " << i + 1
              << " requires explicitly unsigned fixed bits";
@@ -130,7 +130,7 @@ if (concatCall(node)) {
                ac::BitsConcatOp::getOperationName(), operands, TypeRange{*type},
                {})
           ->getResult(0);
-  fixedValues.insert(result);
+  { if (failed(markFixed(result))) return failure(); }
   return result;
 }
 if (node.kind() == "Call" && intrinsic(node.child("func"), "enum_to_bits")) {
@@ -270,7 +270,7 @@ if (node.kind() == "Subscript") {
   if (failed(base))
     return failure();
   if (node.child("slice").kind() == "Slice") {
-    if (!isa<ac::BitsType>(base->getType()) || !fixedValues.contains(*base))
+    if (!isa<ac::BitsType>(base->getType()) || !valueFacts.isFixed(*base))
       return error() << "slice requires explicitly unsigned fixed bits";
     auto shape =
         resolveSlice(node.child("slice"), base->getType(), ownerSymbol);
@@ -286,8 +286,8 @@ if (node.kind() == "Subscript") {
     // concrete widths and remain absent until actual binding proves them.
     if (!analysis.isStaticEvaluable(cast<ac::BitsType>(shape->type).getWidth(), {}) ||
         !analysis.isStaticEvaluable(shape->low, {})) {
-      remember(result, std::nullopt);
-      fixedValues.insert(result);
+      { if (failed(remember(result, std::nullopt))) return failure(); }
+      { if (failed(markFixed(result))) return failure(); }
       return result;
     }
     auto low = analysis.evaluateStatic(shape->low, {}, result.getDefiningOp());
@@ -315,8 +315,8 @@ if (node.kind() == "Subscript") {
       } else if (isa_and_nonnull<BoolAttr>(info.closedSourceConstant))
         closed = info.closedSourceConstant;
     }
-    remember(result, std::nullopt, std::move(interval), closed);
-    fixedValues.insert(result);
+    { if (failed(remember(result, std::nullopt, std::move(interval), closed))) return failure(); }
+    { if (failed(markFixed(result))) return failure(); }
     return result;
   }
   auto index = expression(node.child("slice"), at, ownerSymbol, values,
@@ -334,7 +334,7 @@ if (node.kind() == "BoolOp") {
     return failure();
   if (failed(predicateView(*result, node.item("values", 0), ownerSymbol)))
     return failure();
-  bool anyFixed = fixedValues.contains(*result);
+  bool anyFixed = valueFacts.isFixed(*result);
   for (size_t i = 1; i < node.array("values").size(); ++i) {
     auto next = expression(node.item("values", i), at, ownerSymbol, values,
                            instances, {}, captures);
@@ -342,15 +342,15 @@ if (node.kind() == "BoolOp") {
       return failure();
     if (failed(predicateView(*next, node.item("values", i), ownerSymbol)))
       return failure();
-    bool nextFixed = fixedValues.contains(*next);
+    bool nextFixed = valueFacts.isFixed(*next);
     Value previous = *result;
     result =
         binary(node.child("op").kind() == "And" ? "and" : "or", *result, *next);
     anyFixed |= nextFixed;
     if (anyFixed)
-      fixedValues.insert(*result);
+      { if (failed(markFixed(*result))) return failure(); }
     else {
-      remember(*result, ValueKind::Boolean);
+      { if (failed(remember(*result, ValueKind::Boolean))) return failure(); }
       if (failed(propagateClosed(*result,
                                  node.child("op").kind() == "And"
                                      ? ValueOpcode::AndBool
@@ -372,7 +372,7 @@ if (node.kind() == "UnaryOp" &&
   bool logical = node.child("op").kind() == "Not";
   if (logical && failed(predicateView(*value, node, ownerSymbol)))
     return failure();
-  if (!logical && !fixedValues.contains(*value) &&
+  if (!logical && !valueFacts.isFixed(*value) &&
       valueInfo(*value).sourceKind == ValueKind::Integer)
     return error() << "Integer unary inversion is unsupported; use explicitly "
                       "typed bits";
@@ -381,10 +381,10 @@ if (node.kind() == "UnaryOp" &&
                          TypeRange{value->getType()},
                          {at.getNamedAttr("opcode", at.getStringAttr("not"))})
                     ->getResult(0);
-  if (fixedValues.contains(*value))
-    fixedValues.insert(result);
+  if (valueFacts.isFixed(*value))
+    { if (failed(markFixed(result))) return failure(); }
   else if (valueInfo(*value).sourceKind == ValueKind::Boolean) {
-    remember(result, ValueKind::Boolean);
+    { if (failed(remember(result, ValueKind::Boolean))) return failure(); }
     // Both spellings invert a one-bit Boolean here; Integer Invert has a
     // different evaluator contract and must not reinterpret this value.
     if (failed(propagateClosed(result, ValueOpcode::Not, {*value}, node)))

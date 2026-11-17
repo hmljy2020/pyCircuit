@@ -462,12 +462,12 @@ LogicalResult Importer::lowerValueHelper(ValueHelperDecl &helper) {
     auto argument = block->getArgument(ordinal++);
     environment.values[port.name] = argument;
     environment.boundaries[port.name] = BindingBoundary{port, true};
-    remember(argument, port.sourceKind);
-    if (port.fixedBits) fixedValues.insert(argument);
+    { if (failed(remember(argument, port.sourceKind))) return failure(); }
+    if (port.fixedBits) { if (failed(markFixed(argument))) return failure(); }
   }
   for (const auto &capture : helper.captures) {
     auto argument = block->getArgument(ordinal++);
-    mapValueFacts(capture.second, argument);
+    { if (failed(mapValueFacts(capture.second, argument))) return failure(); }
     if (!capture.first.empty()) {
       environment.values[capture.first] = argument;
       environment.boundaries[capture.first] = inferredBoundary(capture.first, argument, helper.node);
@@ -523,7 +523,7 @@ LogicalResult Importer::lowerValueHelper(ValueHelperDecl &helper) {
     Value replacement = literalPayloadReplacement(extract, *block);
     if (!replacement) continue;
     Value result = extract.getResult();
-    forgetValueFacts(result);
+    { if (failed(forgetValueFacts(result))) return failure(); }
     result.replaceAllUsesWith(replacement);
     extract.erase();
   }
@@ -540,7 +540,7 @@ LogicalResult Importer::lowerValueHelper(ValueHelperDecl &helper) {
   if (failed(literalPlan)) return failure();
   for (auto [constant, representative] : *literalPlan) {
     Value result = constant.getResult();
-    forgetValueFacts(result);
+    { if (failed(forgetValueFacts(result))) return failure(); }
     result.replaceAllUsesWith(representative);
     constant.erase();
   }
@@ -574,7 +574,7 @@ FailureOr<Value> Importer::exactHelperValue(Value value, Type target,
   return error() << "pure helper physical nominal type mismatch";
 }
 
-Value Importer::helperCapture(Value original, Block *block, Location location) {
+FailureOr<Value> Importer::helperCapture(Value original, Block *block, Location location) {
   Value root = originalCaptures.lookup(original);
   if (root) original = root;
   if (original.getParentBlock() == block) return original;
@@ -588,15 +588,16 @@ Value Importer::helperCapture(Value original, Block *block, Location location) {
     return helperCapture(original, ownerOp->getBlock(), location);
   if (isa<ac::RuleOp>(ownerOp)) {
     auto *parentBlock = ownerOp->getBlock();
-    Value outer = helperCapture(original, parentBlock, location);
-    ownerOp->insertOperands(ownerOp->getNumOperands(), outer);
-    return captureValue(block, outer, location);
+    auto outer = helperCapture(original, parentBlock, location);
+    if (failed(outer)) return failure();
+    ownerOp->insertOperands(ownerOp->getNumOperands(), *outer);
+    return captureValue(block, *outer, location);
   }
   if (isa<ac::ModuleOp>(ownerOp)) return original;
   // Method/transaction region captures are populated from the complete static
   // Module capture inventory before either region is lowered.
   error() << "pure helper lexical snapshot is absent from its enclosing capture frame";
-  return Value();
+  return failure();
 }
 
 // These containers cannot contain a source occurrence, even transitively.
@@ -687,9 +688,9 @@ FailureOr<TableQueryCharge> Importer::valueHelperCost(func::FuncOp root,
             fits &= TableQueryBudget::addProduct(cost, TableQueryResource::PayloadWords,
                 (endpoint->getBitWidth() + 63) / 64, cloneFacts ? 3 : 1);
       }
-      if (fixedValues.contains(value))
+      if (valueFacts.isFixed(value))
         fits &= TableQueryBudget::addProduct(cost, TableQueryResource::Slots, copies, 2);
-      if (arithmeticValues.contains(value))
+      if (valueFacts.isArithmetic(value))
         fits &= TableQueryBudget::addProduct(cost, TableQueryResource::Slots, copies, 2);
     };
     // Function arguments map to existing actuals; no clone argument is created.
@@ -864,8 +865,8 @@ FailureOr<SmallVector<Value>> Importer::instantiateValueHelper(
     if (activeLoop) activeLoop->helperOwned.insert(op.getOperation());
     op->setAttr("ac.origin", sourceOccurrence(at, symbol, call));
     for (auto [result, port] : llvm::zip(op.getResults(), helper.results)) {
-      remember(result, port.sourceKind);
-      if (port.fixedBits) fixedValues.insert(result);
+      { if (failed(remember(result, port.sourceKind))) return failure(); }
+      if (port.fixedBits) { if (failed(markFixed(result))) return failure(); }
     }
     return SmallVector<Value>(op.getResults());
   }
@@ -975,7 +976,7 @@ FailureOr<SmallVector<Value>> Importer::instantiateValueHelper(
         auto *copy = builder.cloneWithoutRegions(operation, map);
         if (activeLoop) activeLoop->helperOwned.insert(copy);
         for (auto [original, result] : llvm::zip(operation.getResults(), copy->getResults()))
-          if (retainsFacts(original)) mapValueFacts(original, result, /*sparse=*/true);
+          if (retainsFacts(original)) { if (failed(mapValueFacts(original, result, /*sparse=*/true))) return failure(); }
         copy->setAttrs(cast<DictionaryAttr>(expandAttribute(expandAttribute, copy->getAttrDictionary(), false)));
         for (auto [sourceRegion, copiedRegion] : llvm::zip(operation.getRegions(), copy->getRegions()))
           for (Block &regionBlock : sourceRegion) {
@@ -985,7 +986,7 @@ FailureOr<SmallVector<Value>> Importer::instantiateValueHelper(
             for (Value argument : regionBlock.getArguments()) {
               auto result = newBlock->addArgument(argument.getType(), argument.getLoc());
               map.map(argument, result);
-              if (retainsFacts(argument)) mapValueFacts(argument, result, /*sparse=*/true);
+              if (retainsFacts(argument)) { if (failed(mapValueFacts(argument, result, /*sparse=*/true))) return failure(); }
             }
             auto inside = OpBuilder::atBlockEnd(newBlock);
             if (failed(expand(expand, regionBlock, *newBlock, map, inside))) return failure();
@@ -1001,8 +1002,8 @@ FailureOr<SmallVector<Value>> Importer::instantiateValueHelper(
   auto results = inlineBody(inlineBody, helper.function, inputs, at);
   if (failed(results)) return failure();
   for (auto [result, port] : llvm::zip(*results, helper.results)) {
-    remember(result, port.sourceKind);
-    if (port.fixedBits) fixedValues.insert(result);
+    { if (failed(remember(result, port.sourceKind))) return failure(); }
+    if (port.fixedBits) { if (failed(markFixed(result))) return failure(); }
   }
   return results;
 }
@@ -1045,7 +1046,9 @@ FailureOr<SmallVector<Value>> Importer::valueHelperCall(
   for (const auto &capture : (*helper)->captures) {
     Value value;
     if (!activeValueHelper)
-      value = helperCapture(capture.second, at.getBlock(), call.location(b.getContext(), source.path));
+      { auto captured = helperCapture(capture.second, at.getBlock(), call.location(b.getContext(), source.path));
+      if (failed(captured)) return failure();
+      value = *captured; }
     if (activeValueHelper) {
       // Calls between private templates use their own declaration capture
       // argument, identified by original SSA identity, never current spelling.
@@ -1076,31 +1079,42 @@ FailureOr<Value> Importer::namedHelperMap(const AstNode &call, const AstNode &na
     return error() << "named Table callback requires a zero-capture typed scalar helper";
   auto storage = std::make_unique<Block>();
   auto *block = storage.get();
-  auto cleanup = llvm::scope_exit([&] {
-    for (Value argument : block->getArguments()) hooks.forgetFacts(argument);
-    block->walk([&](Operation *operation) { for (Value result : operation->getResults()) hooks.forgetFacts(result); });
+  auto buildCallback = [&]() -> FailureOr<Value> {
+    SmallVector<Value> rows, actuals;
+    OpBuilder inside(b.getContext());
+    inside.setInsertionPointToEnd(block);
+    for (auto [index, table] : llvm::enumerate(tables)) {
+      auto actual = index ? call.item("args", index) : call.child("func").child("value");
+      auto actualLocation = actual.location(b.getContext(), source.path);
+      auto type = cast<ac::TableType>(table.getType()).getElementType();
+      if (!isa<ac::BitsType>(type) || !(*helper)->inputs[index].fixedBits)
+        return mlir::emitError(actualLocation)
+               << "named Table callback requires fixed Bits elements and parameters";
+      auto row = block->addArgument(type, actualLocation); { if (failed(markFixed(row))) return failure(); } rows.push_back(row);
+      auto equivalent = equivalentBoundaryTypes(type, (*helper)->inputs[index].type, body->getOperation());
+      if (failed(equivalent) || !*equivalent)
+        return mlir::emitError(actualLocation) << "named Table callback parameter type mismatch";
+      auto exact = exactHelperValue(row, (*helper)->inputs[index].type, actual, inside, symbol);
+      if (failed(exact)) return failure();
+      actuals.push_back(*exact);
+    }
+    auto results = instantiateValueHelper(**helper, actuals, call, inside, symbol, true);
+    if (failed(results)) return failure();
+    auto staged = lowering.stage(*block, rows, tables, *results, false);
+    if (failed(staged)) return failure();
+    return staged->front();
+  };
+  auto callbackResult = buildCallback();
+  for (Value argument : block->getArguments())
+    if (failed(hooks.forgetFacts(argument)))
+      return failure();
+  auto forgotten = block->walk([&](Operation *operation) -> WalkResult {
+    for (Value result : operation->getResults())
+      if (failed(hooks.forgetFacts(result)))
+        return WalkResult::interrupt();
+    return WalkResult::advance();
   });
-  SmallVector<Value> rows, actuals;
-  OpBuilder inside(b.getContext());
-  inside.setInsertionPointToEnd(block);
-  for (auto [index, table] : llvm::enumerate(tables)) {
-    auto actual = index ? call.item("args", index) : call.child("func").child("value");
-    auto actualLocation = actual.location(b.getContext(), source.path);
-    auto type = cast<ac::TableType>(table.getType()).getElementType();
-    if (!isa<ac::BitsType>(type) || !(*helper)->inputs[index].fixedBits)
-      return mlir::emitError(actualLocation)
-             << "named Table callback requires fixed Bits elements and parameters";
-    auto row = block->addArgument(type, actualLocation); fixedValues.insert(row); rows.push_back(row);
-    auto equivalent = equivalentBoundaryTypes(type, (*helper)->inputs[index].type, body->getOperation());
-    if (failed(equivalent) || !*equivalent)
-      return mlir::emitError(actualLocation) << "named Table callback parameter type mismatch";
-    auto exact = exactHelperValue(row, (*helper)->inputs[index].type, actual, inside, symbol);
-    if (failed(exact)) return failure();
-    actuals.push_back(*exact);
-  }
-  auto results = instantiateValueHelper(**helper, actuals, call, inside, symbol, true);
-  if (failed(results)) return failure();
-  auto staged = lowering.stage(*block, rows, tables, *results, false);
-  if (failed(staged)) return failure();
-  return staged->front();
+  if (forgotten.wasInterrupted())
+    return failure();
+  return callbackResult;
 }

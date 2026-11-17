@@ -474,6 +474,19 @@ remain statement-time snapshots. Returns, loop admission and specialized effects
 remain the responsibility of their enclosing statement dispatcher. `HelperScope`
 restores helper lexical, control and effect contexts on every exit.
 
+Importer numeric facts and fixed/arithmetic classification are owned by a private
+SSA fact store. Bounded loop staging uses nested undo checkpoints: entering a
+checkpoint does not copy historical facts, and the first actual change to a value
+backs up its complete prior state. A successful child retains its undo records
+for a possible parent rollback. Reservations for each new undo record, its backed-up
+numeric interval endpoints and maintenance work precede mutation; committed and
+rolled-back work both retain their budget charges. Additional endpoint copies
+caused by undo-vector growth remain an accounting limitation tracked under #413.
+Temporary-region fact cleanup can fail and is completed explicitly before
+successful publication. Loop rollback restores facts before destroying its staged
+IR, without inspecting SSA types or reserving further resources. Undo keys for
+already destroyed helper temporaries remain opaque identities during replay.
+
 Numeric facts share query/record operations and `mapValueFacts`. Equivalent SSA
 copies and captures inherit existing source kind, interval, closed constant and
 fixed/mathematical classification; they do not infer a missing interval from the

@@ -108,7 +108,7 @@ FailureOr<Value> Importer::enumToBits(Value value, const AstNode &node,
   bindings.owner = operation->getParentOfType<ac::ModuleOp>();
   if (failed(analysis.verifyEnumValueOperation(operation, bindings)))
     return failure();
-  fixedValues.insert(operation->getResult(0));
+  { if (failed(markFixed(operation->getResult(0)))) return failure(); }
   return operation->getResult(0);
 }
 FailureOr<SmallVector<Value>>
@@ -132,7 +132,7 @@ Importer::enumFromBits(const AstNode &call, OpBuilder &at,
                           {}, captures);
   if (failed(input))
     return failure();
-  if (!isa<ac::BitsType>(input->getType()) || !fixedValues.contains(*input))
+  if (!isa<ac::BitsType>(input->getType()) || !valueFacts.isFixed(*input))
     return error() << "enum_from_bits requires authoritative fixed bits";
   auto operation = createOp(at, call.location(b.getContext(), source.path),
                             ac::EnumFromBitsOp::getOperationName(), {*input},
@@ -142,7 +142,7 @@ Importer::enumFromBits(const AstNode &call, OpBuilder &at,
   bindings.owner = operation->getParentOfType<ac::ModuleOp>();
   if (failed(analysis.verifyEnumValueOperation(operation, bindings)))
     return failure();
-  remember(operation->getResult(1), ac::detail::ValueKind::Boolean);
+  { if (failed(remember(operation->getResult(1), ac::detail::ValueKind::Boolean))) return failure(); }
   return SmallVector<Value>{operation->getResult(0), operation->getResult(1)};
 }
 bool Importer::intrinsic(const AstNode &node, StringRef name) const {
@@ -320,7 +320,7 @@ FailureOr<FixedCountShape>
 Importer::resolveFixedInputShape(Value input, const AstNode &node,
                                  FlatSymbolRefAttr symbol, StringRef name) {
   auto kind = valueInfo(input).sourceKind;
-  if (!isa<ac::BitsType>(input.getType()) || !fixedValues.contains(input) ||
+  if (!isa<ac::BitsType>(input.getType()) || !valueFacts.isFixed(input) ||
       kind == ac::detail::ValueKind::Boolean ||
       kind == ac::detail::ValueKind::Integer)
     return mlir::emitError(
@@ -411,7 +411,7 @@ FailureOr<Value> Importer::lowerFixedCount(Value input, const AstNode &node,
     return failure();
   if (name == "popcount") {
     Value result = lowerPopcountValue(input, *shape, node, at, symbol);
-    fixedValues.insert(result);
+    { if (failed(markFixed(result))) return failure(); }
     return result;
   }
 
@@ -462,7 +462,7 @@ FailureOr<Value> Importer::lowerFixedCount(Value input, const AstNode &node,
   };
   if (shape->width == 1) {
     Value result = unaryNot(input);
-    fixedValues.insert(result);
+    { if (failed(markFixed(result))) return failure(); }
     return result;
   }
 
@@ -489,7 +489,7 @@ FailureOr<Value> Importer::lowerFixedCount(Value input, const AstNode &node,
                TypeRange{shape->resultType}, {})
           ->getResult(0);
   Value result = binary("xor", selected, binary("and", poison, mask));
-  fixedValues.insert(result);
+  { if (failed(markFixed(result))) return failure(); }
   return result;
 }
 StringRef Importer::fixedResultCall(const AstNode &node) const {
@@ -538,7 +538,7 @@ FailureOr<bool> Importer::validateFixedEncodingCall(const AstNode &node,
   }
   return high;
 }
-SmallVector<Value>
+FailureOr<SmallVector<Value>>
 Importer::lowerFixedEncodingValue(Value input, const FixedCountShape &shape,
                                   bool high, bool onehot, const AstNode &node,
                                   OpBuilder &at, FlatSymbolRefAttr symbol) {
@@ -564,13 +564,13 @@ Importer::lowerFixedEncodingValue(Value input, const FixedCountShape &shape,
                     {at.getNamedAttr("opcode", at.getStringAttr(opcode))})
         ->getResult(0);
   };
-  auto compare = [&](StringRef predicate, Value lhs, Value rhs) -> Value {
+  auto compare = [&](StringRef predicate, Value lhs, Value rhs) -> FailureOr<Value> {
     Value result =
         createOp(at, loc, ac::BitsCompareOp::getOperationName(), {lhs, rhs},
                  TypeRange{type(1)},
                  {at.getNamedAttr("predicate", at.getStringAttr(predicate))})
             ->getResult(0);
-    remember(result, ac::detail::ValueKind::Boolean);
+    { if (failed(remember(result, ac::detail::ValueKind::Boolean))) return failure(); }
     return result;
   };
 
@@ -615,14 +615,16 @@ Importer::lowerFixedEncodingValue(Value input, const FixedCountShape &shape,
                            indexBits, TypeRange{type(indexWidth)}, {})
                       ->getResult(0);
   }
-  fixedValues.insert(index);
-  Value valid = compare("ne", input, constant(0, input.getType()));
-  SmallVector<Value> results{index, valid};
+  { if (failed(markFixed(index))) return failure(); }
+  auto valid = compare("ne", input, constant(0, input.getType()));
+  if (failed(valid)) return failure();
+  SmallVector<Value> results{index, *valid};
   if (onehot) {
     Value population = lowerPopcountValue(input, shape, node, at, symbol);
     // Even for a singleton, compare preserves an unknown input as unknown.
-    results.push_back(
-        compare("ult", constant(1, shape.resultType), population));
+    auto multiple = compare("ult", constant(1, shape.resultType), population);
+    if (failed(multiple)) return failure();
+    results.push_back(*multiple);
   }
   return results;
 }
@@ -851,7 +853,7 @@ FailureOr<Value> Importer::constant(Type type, unsigned value,
                  TypeRange{type},
                  {at.getNamedAttr("value", literal(value, node, symbol))})
             ->getResult(0);
-    fixedValues.insert(result);
+    { if (failed(markFixed(result))) return failure(); }
     return result;
   }
   if (value)
@@ -906,12 +908,12 @@ FailureOr<Value> Importer::select(Value guard, Value yes, Value no,
     auto result = createOp(at, loc, ac::BitsSelectOp::getOperationName(),
                            {guard, yes, no}, TypeRange{yes.getType()}, {})
                       ->getResult(0);
-    if (fixedValues.contains(yes) && fixedValues.contains(no)) {
-      fixedValues.insert(result);
-      refineSelectFacts(result, guard, yes, no, node, symbol);
+    if (valueFacts.isFixed(yes) && valueFacts.isFixed(no)) {
+      { if (failed(markFixed(result))) return failure(); }
+      if (failed(refineSelectFacts(result, guard, yes, no, node, symbol))) return failure();
     } else if (valueInfo(yes).sourceKind == ac::detail::ValueKind::Boolean &&
                valueInfo(no).sourceKind == ac::detail::ValueKind::Boolean)
-      remember(result, ac::detail::ValueKind::Boolean);
+      { if (failed(remember(result, ac::detail::ValueKind::Boolean))) return failure(); }
     return result;
   }
   if (auto record = dyn_cast<ac::StructType>(yes.getType())) {
@@ -921,15 +923,19 @@ FailureOr<Value> Importer::select(Value guard, Value yes, Value no,
       auto field = cast<DictionaryAttr>(raw);
       auto type = field.getAs<TypeAttr>("type").getValue();
       auto name = field.getAs<StringAttr>("name");
-      auto project = [&](Value value) {
+      auto project = [&](Value value) -> FailureOr<Value> {
         auto projected =
             createOp(at, loc, ac::StructGetOp::getOperationName(), {value},
                      TypeRange{type}, {at.getNamedAttr("field", name)})
                 ->getResult(0);
-        rememberStructField(projected, field, node);
+        if (failed(rememberStructField(projected, field, node))) return failure();
         return projected;
       };
-      auto value = select(guard, project(yes), project(no), node, at, symbol);
+      auto yesField = project(yes);
+      if (failed(yesField)) return failure();
+      auto noField = project(no);
+      if (failed(noField)) return failure();
+      auto value = select(guard, *yesField, *noField, node, at, symbol);
       if (failed(value))
         return failure();
       result.push_back(*value);
@@ -974,7 +980,7 @@ LogicalResult Importer::proveIndexExtent(Value index, uint64_t extent,
                                          const AstNode &node,
                                          StringRef indexedKind) {
   auto info = valueInfo(index);
-  bool knownUnsigned = fixedValues.contains(index) ||
+  bool knownUnsigned = valueFacts.isFixed(index) ||
                        info.sourceKind == ac::detail::ValueKind::Boolean ||
                        (info.sourceKind == ac::detail::ValueKind::Integer &&
                         info.interval && !info.interval->lower.isNegative());
@@ -1013,7 +1019,7 @@ FailureOr<SourceIndexAdmission> Importer::proveIndex(Value table, Value index,
     if (failed(ac::detail::verifySourceTemplateType(analysis, type, lexical, site)))
       return failure();
     auto info = valueInfo(index);
-    bool nonnegative = fixedValues.contains(index) ||
+    bool nonnegative = valueFacts.isFixed(index) ||
         info.sourceKind == ac::detail::ValueKind::Boolean ||
         (info.sourceKind == ac::detail::ValueKind::Integer && info.interval &&
          !info.interval->lower.isNegative());
@@ -1033,6 +1039,23 @@ FailureOr<SourceIndexAdmission> Importer::proveIndex(Value table, Value index,
   if (failed(proveIndexExtent(index, *size, node, "table"))) return failure();
   return SourceIndexAdmission::Proved;
 }
+FailureOr<TableUpdateDescription> Importer::describeTableUpdate(
+    ac::TableType table, Type index, Type replacement, const AstNode &node) {
+  if (failed(prepayLoopAnalysis(node)) ||
+      failed(chargeLoopDescriptorWork(node, "Table update description")))
+    return failure();
+  ac::HardwareAnalysis analysis(*body);
+  auto rows = analysis.getTableSize(table, {}, body->getOperation());
+  auto width = analysis.getPackedWidth(index, {}, body->getOperation());
+  if (failed(rows) || failed(width)) return failure();
+  TableUpdateDescription result{table, index, replacement,
+      ac::TableType::get(b.getContext(), table.getShape(), index),
+      ac::TableType::get(b.getContext(), table.getShape(), replacement),
+      *rows, *width,
+      std::max(1u, llvm::Log2_64_Ceil(*rows))};
+  return result;
+}
+
 FailureOr<Value> Importer::tableUpdate(Value table, Value index,
                                        Value replacement,
                                        ArrayRef<Attribute> fieldPath,
@@ -1045,7 +1068,10 @@ FailureOr<Value> Importer::tableUpdate(Value table, Value index,
     return mlir::emitError(node.location(b.getContext(), source.path))
         << "deferred local Table reconstruction is unsupported; use an indexed state write";
   auto type = cast<ac::TableType>(table.getType());
-  SmallVector<Type> resultTypes{type};
+  auto description = describeTableUpdate(type, index.getType(),
+                                         replacement.getType(), node);
+  if (failed(description)) return failure();
+  SmallVector<Type> resultTypes{description->table};
   if (domainSlot) {
     if (!activeRule || *domainSlot >= activeRule->domains.size())
       return error() << "invalid assignment-time address witness slot";
@@ -1057,38 +1083,34 @@ FailureOr<Value> Importer::tableUpdate(Value table, Value index,
     resultTypes.push_back(witness.maskType);
   }
   auto loc = node.location(b.getContext(), source.path);
-  auto splat = [&](Value value) {
+  auto splat = [&](Value value, ac::TableType resultType) {
     return createOp(at, loc, ac::TableSplatOp::getOperationName(), {value},
-                    TypeRange{ac::TableType::get(
-                        b.getContext(), type.getShape(), value.getType())},
+                    TypeRange{resultType},
                     {at.getNamedAttr("shape", type.getShape())})
         ->getResult(0);
   };
   auto map = createOp(
       at, loc, ac::TableMapOp::getOperationName(),
-      {table, splat(index), splat(replacement)}, resultTypes,
+      {table, splat(index, description->indexSplat),
+       splat(replacement, description->replacementSplat)}, resultTypes,
       {at.getNamedAttr("shape", type.getShape()),
        at.getNamedAttr("operandSegmentSizes", at.getDenseI32ArrayAttr({3, 0}))},
       1);
   ac::HardwareAnalysis analysis(*body);
-  auto size = analysis.getTableSize(type, {}, map);
-  if (failed(size))
-    return failure();
+
   auto block = new Block();
   map->getRegion(0).push_back(block);
-  auto ordinalWidth = std::max(1u, llvm::Log2_64_Ceil(*size));
+  auto ordinalWidth = description->ordinalWidth;
   auto ordinalType = bits(ordinalWidth, node, symbol);
   Value ordinal = block->addArgument(ordinalType, loc);
   auto old = block->addArgument(type.getElementType(), loc);
-  Value idx = block->addArgument(index.getType(), loc);
-  auto next = block->addArgument(replacement.getType(), loc);
+  Value idx = block->addArgument(description->index, loc);
+  auto next = block->addArgument(description->replacement, loc);
   auto nested = OpBuilder::atBlockEnd(block);
   // Range proof does not establish known bits. Compare at the wider width so
   // high X/Z index bits participate, and normalize equal-width spelling only.
-  auto width = analysis.getPackedWidth(idx.getType(), {}, map);
-  if (failed(width))
-    return failure();
-  if (*width == ordinalWidth &&
+  auto width = description->indexWidth;
+  if (width == ordinalWidth &&
       !ac::areEquivalentHardwareTypes(idx.getType(), ordinalType)) {
     auto equivalent = equivalentBoundaryTypes(idx.getType(), ordinalType, map);
     if (failed(equivalent))
@@ -1096,13 +1118,17 @@ FailureOr<Value> Importer::tableUpdate(Value table, Value index,
     if (!*equivalent)
       return error()
              << "table index comparison requires equivalent equal-width types";
-    idx = boundaryBitsIdentity(idx, ordinalType, node, nested, symbol);
-  } else if (*width < ordinalWidth) {
+    {
+      auto identity = boundaryBitsIdentity(idx, ordinalType, node, nested, symbol);
+      if (failed(identity)) return failure();
+      idx = *identity;
+    }
+  } else if (width < ordinalWidth) {
     idx = createOp(nested, loc, ac::BitsResizeOp::getOperationName(), {idx},
                    TypeRange{ordinalType},
                    {nested.getNamedAttr("mode", nested.getStringAttr("zext"))})
               ->getResult(0);
-  } else if (*width > ordinalWidth) {
+  } else if (width > ordinalWidth) {
     ordinal =
         createOp(nested, loc, ac::BitsResizeOp::getOperationName(), {ordinal},
                  TypeRange{idx.getType()},
@@ -1148,7 +1174,7 @@ FailureOr<Value> Importer::unsignedBoundary(Value value, Type target,
                                             FlatSymbolRefAttr symbol,
                                             bool allowFixedWidening) {
   auto info = valueInfo(value);
-  auto fixedResult = [&](Value result) {
+  auto fixedResult = [&](Value result) -> FailureOr<Value> {
     auto interval = info.interval;
     if (interval && interval->lower.isNegative())
       interval.reset();
@@ -1160,8 +1186,8 @@ FailureOr<Value> Importer::unsignedBoundary(Value value, Type target,
       closed = {};
     // These admitted conversions preserve nonnegative mathematical values,
     // but destination authority is fixed bits, independent of producer aliases.
-    remember(result, std::nullopt, std::move(interval), closed);
-    fixedValues.insert(result);
+    { if (failed(remember(result, std::nullopt, std::move(interval), closed))) return failure(); }
+    { if (failed(markFixed(result))) return failure(); }
     return result;
   };
   auto targetBits = dyn_cast<ac::BitsType>(target);
@@ -1169,12 +1195,12 @@ FailureOr<Value> Importer::unsignedBoundary(Value value, Type target,
                                             at.getBlock()->getParentOp());
   if (failed(equivalent))
     return failure();
-  if (targetBits && !fixedValues.contains(value) && !info.sourceKind)
+  if (targetBits && !valueFacts.isFixed(value) && !info.sourceKind)
     return mlir::emitError(node.location(b.getContext(), source.path))
            << "unsigned boundary requires authoritative bits, Boolean or "
               "Integer provenance";
   if (targetBits && info.sourceKind == ac::detail::ValueKind::Integer &&
-      !fixedValues.contains(value)) {
+      !valueFacts.isFixed(value)) {
     auto closed = dyn_cast_or_null<ac::MathIntAttr>(info.closedSourceConstant);
     ac::HardwareAnalysis analysis(*body);
     auto constant = value.getDefiningOp<ac::BitsConstantOp>();
@@ -1194,7 +1220,11 @@ FailureOr<Value> Importer::unsignedBoundary(Value value, Type target,
     if (!contextualStaticConstant) {
       if (*equivalent &&
           !ac::areEquivalentHardwareTypes(value.getType(), target)) {
-        value = boundaryBitsIdentity(value, target, node, at, symbol);
+        {
+          auto identity = boundaryBitsIdentity(value, target, node, at, symbol);
+          if (failed(identity)) return failure();
+          value = *identity;
+        }
         info = valueInfo(value);
       }
       auto converted = lowerExactIntegerBoundary(at, numericSite(node, symbol),
@@ -1208,14 +1238,14 @@ FailureOr<Value> Importer::unsignedBoundary(Value value, Type target,
     // not treat a parameter default as that proof. The fresh boundary below
     // still leaves the original Integer producer and its aliases unchanged.
   } else if (*equivalent && targetBits && isa<ac::BitsType>(value.getType()) &&
-             fixedValues.contains(value) &&
+             valueFacts.isFixed(value) &&
              !ac::areEquivalentHardwareTypes(value.getType(), target)) {
     // Only the width spelling changes. Keep the producer's kind and value facts
     // while giving this boundary wire the declared destination type.
     return boundaryBitsIdentity(value, target, node, at, symbol);
   } else if (allowFixedWidening && targetBits &&
              isa<ac::BitsType>(value.getType()) &&
-             fixedValues.contains(value) && !*equivalent) {
+             valueFacts.isFixed(value) && !*equivalent) {
     ac::HardwareAnalysis analysis(*body);
     auto *owner = at.getBlock()->getParentOp();
     auto sourceWidth = analysis.getPackedWidth(value.getType(), {}, owner);
@@ -1240,7 +1270,7 @@ FailureOr<Value> Importer::unsignedBoundary(Value value, Type target,
   } else if (!*equivalent)
     return mlir::emitError(node.location(b.getContext(), source.path))
            << "unsigned boundary hardware type mismatch";
-  if (!targetBits || fixedValues.contains(value))
+  if (!targetBits || valueFacts.isFixed(value))
     return value;
   // A fresh identity wire gives the destination unsigned facts without changing
   // the Boolean/Integer producer, including any aliases already captured.

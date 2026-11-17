@@ -67,10 +67,10 @@ FailureOr<Value> Importer::materializeMatchKey(const MatchPatternKey &key,
                         TypeRange{type}, {at.getNamedAttr("value", literal)})
                    ->getResult(0);
   if (fixedBits)
-    fixedValues.insert(value);
+    { if (failed(markFixed(value))) return failure(); }
   else
-    remember(value, boolean ? ValueKind::Boolean : ValueKind::Integer, {},
-             key.value);
+    { if (failed(remember(value, boolean ? ValueKind::Boolean : ValueKind::Integer, {},
+             key.value))) return failure(); }
   return value;
 }
 
@@ -131,12 +131,12 @@ LogicalResult Importer::matchStatement(const AstNode &statement, OpBuilder &at,
   auto info = valueInfo(*subject);
   bool boolean = !enumeration && info.sourceKind == ValueKind::Boolean;
   bool integer = !enumeration && info.sourceKind == ValueKind::Integer;
-  bool fixed = !enumeration && fixedValues.contains(*subject);
+  bool fixed = !enumeration && valueFacts.isFixed(*subject);
   if (!enumeration && (!scalar || (!boolean && !integer && !fixed)))
     return diagnostic()
            << "match selector requires authoritative Boolean, unsigned bits, "
               "finite nonnegative Integer or nominal Enum";
-  if (integer && (arithmeticValues.contains(*subject) || !info.interval ||
+  if (integer && (valueFacts.isArithmetic(*subject) || !info.interval ||
                   info.interval->lower.isNegative()))
     return diagnostic()
            << "match signed or mathematical Integer selectors are unsupported";
@@ -265,7 +265,7 @@ LogicalResult Importer::matchStatement(const AstNode &statement, OpBuilder &at,
                      TypeRange{internalBits(1, key.site, ownerSymbol)},
                      {at.getNamedAttr("opcode", at.getStringAttr("or"))})
                 ->getResult(0);
-        remember(predicate, ValueKind::Boolean);
+        { if (failed(remember(predicate, ValueKind::Boolean))) return failure(); }
         if (failed(propagateClosed(predicate, ac::detail::ValueOpcode::OrBool,
                                    {previous, *equal}, key.site)))
           return failure();
@@ -734,10 +734,7 @@ FailureOr<LoopResourceShape> Importer::describeLoopExpression(
   if (!pureCheckedAdd(envelope.nodes, 1))
     return failure();
   auto include = [&](LoopResourceShape shape) -> FailureOr<LoopResourceShape> {
-    envelope.precision = std::max(envelope.precision, shape.precision);
-    envelope.words = std::max(envelope.words, shape.words);
-    envelope.operands = std::max(envelope.operands, shape.fields);
-    if (!pureCheckedAdd(envelope.declarations, shape.declarations))
+    if (!envelope.recordGeneratedValue(shape))
       return failure();
     return shape;
   };
@@ -771,7 +768,11 @@ FailureOr<LoopResourceShape> Importer::describeLoopExpression(
         envelope.factWords = std::max(
             envelope.factWords, uint64_t(endpoint->getBitWidth() / 64 +
                                          (endpoint->getBitWidth() % 64 != 0)));
-    return typed(found->second.getType());
+    // Referencing a producer checks its layout but does not recreate its payload.
+    auto shape = loopTypeShape(found->second.getType(), node);
+    if (failed(shape) || !envelope.observeValue(*shape))
+      return failure();
+    return *shape;
   }
   if (node.kind() == "Constant") {
     if (!operation(1))
@@ -867,8 +868,9 @@ FailureOr<LoopResourceShape> Importer::describeLoopExpression(
       return failure();
     envelope.precision = std::max(envelope.precision,
                                   std::max(base->precision, count->precision));
-    envelope.words =
-        std::max(envelope.words, std::max(base->words, count->words));
+    if (!envelope.recordGeneratedValue(*base) ||
+        !envelope.recordGeneratedValue(*count))
+      return failure();
     return scalar(1);
   }
   if (node.kind() == "UnaryOp") {
@@ -1211,6 +1213,58 @@ uint64_t loopIntegerDecimalBytes(uint64_t precision) {
   return precision / 3 + (precision % 3 != 0) + 1;
 }
 
+LogicalResult Importer::chargeTableUpdate(
+    const TableUpdateDescription &d, LoopStatementEnvelope &e,
+    const AstNode &node) {
+  // Table results and splats own payload; operands only own references. The
+  // region values are replicated once per row, including its ordinal argument.
+  auto exhausted = [&]() -> LogicalResult {
+    return mlir::emitError(node.location(b.getContext(), source.path))
+           << "bounded for Table update resource envelope exhausted";
+  };
+  ac::HardwareAnalysis analysis(*body);
+  auto elementWidth = analysis.getPackedWidth(
+      d.table.getElementType(), {}, body->getOperation());
+  if (failed(elementWidth)) return failure();
+  auto addValue = [&](uint64_t width, uint64_t rows) {
+    uint64_t words = width / 64 + (width % 64 != 0), payload = 0;
+    if (!pureCheckedProduct(words, rows, words) ||
+        !pureCheckedProduct(3, words, payload)) return false;
+    e.aggregateValueWords = std::max(e.aggregateValueWords, words);
+    e.precision = std::max(e.precision, width);
+    ++e.aggregateValues;
+    return TableQueryBudget::add(e.aggregateReservation,
+                                 TableQueryResource::PayloadWords, payload);
+  };
+  // Generated aggregate results: index/replacement splats, map, and optional
+  // assignment-domain mask. Existing table operands contribute no new payload.
+  for (Type type : {Type(d.indexSplat), Type(d.replacementSplat), Type(d.table)}) {
+    auto words = loopStorageWords(type, analysis, node);
+    if (failed(words) ||
+        !TableQueryBudget::addProduct(e.aggregateReservation,
+            TableQueryResource::PayloadWords, *words, 3)) return exhausted();
+    e.aggregateValueWords = std::max(e.aggregateValueWords, *words);
+    ++e.aggregateValues;
+  }
+  if (!addValue(1, d.rows)) return exhausted();
+  // Region arguments, comparison, selection and at most one width conversion.
+  for (uint64_t width : {d.ordinalWidth, *elementWidth, d.indexWidth,
+                        *elementWidth, uint64_t(1), *elementWidth,
+                        std::max(d.indexWidth, d.ordinalWidth)})
+    if (!addValue(width, d.rows)) return exhausted();
+  e.aggregateArguments += 4;
+  // Two splats, map, optional normalization, compare, select, yield.
+  e.aggregateOperations += 7;
+  uint64_t slots = 0, frames = 0;
+  bool fits = pureCheckedProduct(activeSourceExpansion.size(), 7, frames) &&
+      pureCheckedAdd(slots, 7 * 6 + 4 + 3 * e.aggregateValues) &&
+      pureCheckedAdd(slots, frames) &&
+      TableQueryBudget::add(e.aggregateReservation, TableQueryResource::Slots, slots) &&
+      TableQueryBudget::add(e.aggregateReservation, TableQueryResource::Operations, 7) &&
+      TableQueryBudget::add(e.aggregateReservation, TableQueryResource::Work, 30);
+  return fits ? success() : exhausted();
+}
+
 LogicalResult Importer::payLoopEnvelope(LoopStatementEnvelope &e,
                                         const AstNode &site, StringRef phase) {
   uint64_t B = 0, L = 0, P = 0, h = 0, slots = 0, storage = 0, facts = 0,
@@ -1221,7 +1275,7 @@ LogicalResult Importer::payLoopEnvelope(LoopStatementEnvelope &e,
               pureCheckedProduct(2, e.operations, L) && pureCheckedAdd(L, B);
   h = std::max(e.factWords, e.precision / 64 + (e.precision % 64 != 0));
   fits &= pureCheckedProduct(
-      e.words,
+      e.generatedLayoutWords,
       std::max(uint64_t(1), e.precision / 64 + (e.precision % 64 != 0)), P);
   fits &= pureCheckedProduct(e.operands + 2, e.operations, slots) &&
           pureCheckedAdd(slots, B);
@@ -1256,13 +1310,26 @@ LogicalResult Importer::payLoopEnvelope(LoopStatementEnvelope &e,
       TableQueryBudget::add(e.reservation, TableQueryResource::ConstantBytes,
                             constants) &&
       TableQueryBudget::add(e.reservation, TableQueryResource::Work, work);
+  // Facts/provenance remain bounded separately from generated hardware payload.
+  uint64_t aggregateFacts = 0, aggregateBytes = 0;
+  fits &= pureCheckedProduct(2 * h, e.aggregateValues, aggregateFacts) &&
+          pureCheckedProduct(3 * loopIntegerDecimalBytes(factPrecision),
+                             e.aggregateValues, aggregateBytes) &&
+          TableQueryBudget::add(e.aggregateReservation,
+              TableQueryResource::PayloadWords, aggregateFacts) &&
+          TableQueryBudget::add(e.aggregateReservation,
+              TableQueryResource::ConstantBytes, aggregateBytes);
+  for (unsigned i = 0; i < std::size(e.reservation.amounts); ++i)
+    fits &= pureCheckedAdd(e.reservation.amounts[i],
+                           e.aggregateReservation.amounts[i]);
   if (!fits || !queryBudget.reserve(e.reservation, reason))
     return mlir::emitError(site.location(b.getContext(), source.path))
            << "bounded for iteration " << activeLoop->iteration << " " << phase
            << ": " << (fits ? reason : "resource envelope counter exhausted");
-  e.arguments = B;
-  e.values = L;
-  e.words = P;
+  e.arguments = B + e.aggregateArguments;
+  e.values = L + e.aggregateValues;
+  e.operations += e.aggregateOperations;
+  e.generatedValueWords = std::max(P, e.aggregateValueWords);
   e.factWords = h;
   return success();
 }
@@ -1298,6 +1365,37 @@ Importer::reserveLoopStatement(const AstNode &statement,
         return failure();
       expected = *type;
     }
+    auto directRoot = target.kind() == "Subscript" &&
+                              target.child("value").kind() == "Name"
+                          ? environment.values.find(assignmentRoot(target))
+                          : environment.values.end();
+    auto directTable = directRoot == environment.values.end()
+                           ? ac::TableType()
+                           : dyn_cast<ac::TableType>(directRoot->second.getType());
+    if (directTable && isa<ac::BitsType>(directTable.getElementType())) {
+      auto index = describeLoopExpression(target.child("slice"), environment,
+                                         symbol, envelope);
+      if (failed(index)) return failure();
+      expected = directTable.getElementType();
+      auto rhs = describeLoopExpression(statement.child("value"), environment,
+                                       symbol, envelope, expected);
+      if (failed(rhs)) return failure();
+      auto destination = loopTypeShape(*expected, target);
+      if (failed(destination) || !envelope.recordGeneratedValue(*destination))
+        return failure();
+      auto indexType = index->type ? index->type
+                                   : bits(index->precision, target, symbol);
+      auto description =
+          describeTableUpdate(directTable, indexType, *expected, target);
+      if (failed(description) ||
+          failed(chargeTableUpdate(*description, envelope, target)))
+        return failure();
+      // Scalar boundary conversion and assignment bookkeeping retain the
+      // expression envelope; aggregate payload is added independently.
+      envelope.operations += 3;
+      if (failed(payLoopEnvelope(envelope, statement, phase))) return failure();
+      return envelope;
+    }
     if (target.kind() != "Name") {
       auto shape =
           describeLoopExpression(target, environment, symbol, envelope);
@@ -1318,10 +1416,8 @@ Importer::reserveLoopStatement(const AstNode &statement,
                                      : 4) ||
           !pureCheckedAdd(envelope.operations, count))
         return failure();
-      envelope.precision = std::max(envelope.precision, aggregate->precision);
-      envelope.words = std::max(envelope.words, aggregate->words);
-      envelope.operands = std::max(envelope.operands, aggregate->fields);
-      envelope.declarations += aggregate->declarations;
+      if (!envelope.recordGeneratedValue(*aggregate))
+        return failure();
       envelope.maps += aggregate->declarations;
     }
     // Binding may widen or otherwise reconstruct the completed RHS. A Name
@@ -1331,10 +1427,7 @@ Importer::reserveLoopStatement(const AstNode &statement,
       auto destination = loopTypeShape(*expected, target);
       if (failed(destination))
         return failure();
-      envelope.precision = std::max(envelope.precision, destination->precision);
-      envelope.words = std::max(envelope.words, destination->words);
-      envelope.operands = std::max(envelope.operands, destination->fields);
-      if (!pureCheckedAdd(envelope.declarations, destination->declarations))
+      if (!envelope.recordGeneratedValue(*destination))
         return failure();
     }
     if (failed(describeLoopExpression(statement.child("value"), environment,
@@ -1380,10 +1473,9 @@ FailureOr<LoopStatementEnvelope> Importer::reserveLoopJoin(
       if (negativePeer && isa<ac::BitsType>(value.getType()) &&
           !pureCheckedAdd(selectionPrecision, 1))
         return failure();
-      envelope.precision = std::max(envelope.precision, selectionPrecision);
-      envelope.words = std::max(envelope.words, shape->words);
-      envelope.operands = std::max(envelope.operands, shape->fields);
-      envelope.declarations += shape->declarations;
+      shape->precision = selectionPrecision;
+      if (!envelope.recordGeneratedValue(*shape))
+        return failure();
       envelope.maps += shape->declarations;
       envelope.operations += 4 + 8 * shape->declarations + 9;
     }
@@ -1426,7 +1518,7 @@ Importer::auditLoopStatement(Block &block, Operation *previous,
       return failure();
     auto weight = loopStorageWords(value.getType(), analysis, site);
     if (failed(weight) ||
-        !within(*weight, envelope.words, "value layout words") ||
+        !within(*weight, envelope.generatedValueWords, "value layout words") ||
         !TableQueryBudget::addProduct(
             measured, TableQueryResource::PayloadWords, 3 * *weight, rows))
       return failure();
@@ -1487,7 +1579,10 @@ Importer::auditLoopStatement(Block &block, Operation *previous,
       auto shape = loopTypeShape(operand.getType(), site, &analysis);
       if (failed(shape) ||
           !within(shape->precision, envelope.precision, "operand precision") ||
-          !within(shape->words, envelope.words, "operand layout words"))
+          !within(shape->words,
+                  std::max(envelope.operandLayoutWords,
+                           envelope.generatedValueWords),
+                  "operand layout words"))
         return failure();
     }
     for (Value result : operation.getResults())
@@ -1788,13 +1883,6 @@ LogicalResult Importer::lowerLiteralFor(const AstNode &statement, OpBuilder &at,
       path(item.second.contract().node);
     }
   }
-  // Snapshot the complete fact maps, including entries not currently named by
-  // the local environment. Dense-map slack is prepaid before the copies.
-  slots(numericValues.size());
-  slots(fixedValues.size());
-  slots(arithmeticValues.size());
-  for (const auto &item : numericValues)
-    fact(item.second);
   slots(activeSourceExpansion.size());
   if (activeRule) {
     slots(activeRule->domains.size() + activeRule->checks.size() +
@@ -1873,9 +1961,7 @@ LogicalResult Importer::lowerLiteralFor(const AstNode &statement, OpBuilder &at,
     return diagnostic() << "bounded for snapshot/header: "
                         << (fits ? reason : "resource counter exhausted");
 
-  const auto savedNumeric = numericValues;
-  const auto savedFixed = fixedValues;
-  const auto savedArithmetic = arithmeticValues;
+  const auto factCheckpoint = valueFacts.checkpoint();
   std::optional<RuleEvaluation> savedEvaluation;
   if (activeRule) savedEvaluation = *activeRule;
   llvm::StringMap<Instance *> savedInstances;
@@ -1896,23 +1982,6 @@ LogicalResult Importer::lowerLiteralFor(const AstNode &statement, OpBuilder &at,
   temporary->getRegion(0).push_back(block);
   BranchEnvironment staged = environment;
   IRMapping captures;
-  auto capture = [&](Value original) {
-    if (!original)
-      return Value();
-    for (const auto &entry : captures.getValueMap())
-      if (entry.second == original)
-        return entry.first;
-    Value argument = captureValue(block, original, temporary->getLoc());
-    captures.map(argument, original);
-    return argument;
-  };
-  for (Value original : anonymousHelperCaptures) capture(original);
-  for (auto &entry : staged.values)
-    entry.second = capture(entry.second);
-  for (auto &entry : staged.writes)
-    entry.second = capture(entry.second);
-  staged.ambient = capture(staged.ambient);
-  staged.continuation = capture(staged.continuation);
   LoopLoweringContext context{statement, &admission, 0, {}, {}, activeLoop};
   auto previousLoop = std::exchange(activeLoop, &context);
   bool committed = false;
@@ -1920,9 +1989,7 @@ LogicalResult Importer::lowerLiteralFor(const AstNode &statement, OpBuilder &at,
     activeSourceExpansion.resize(expansionDepth);
     activeLoop = previousLoop;
     if (!committed) {
-      numericValues = savedNumeric;
-      fixedValues = savedFixed;
-      arithmeticValues = savedArithmetic;
+      valueFacts.rollback(factCheckpoint);
       if (savedEvaluation) {
         *activeRule = *savedEvaluation;
         if (savedEvaluation->instances)
@@ -1932,15 +1999,38 @@ LogicalResult Importer::lowerLiteralFor(const AstNode &statement, OpBuilder &at,
       }
       for (auto &entry : instanceStates)
         *entry.first = std::move(entry.second);
-    } else {
-      for (Value argument : block->getArguments()) {
-        forgetValueFacts(argument);
-      }
     }
     for (Value argument : block->getArguments()) originalCaptures.erase(argument);
     helperCaptureBindings.erase(block);
     temporary->erase();
   });
+  auto capture = [&](Value original) -> FailureOr<Value> {
+    if (!original) return Value();
+    for (const auto &entry : captures.getValueMap())
+      if (entry.second == original) return entry.first;
+    auto argument = captureValue(block, original, temporary->getLoc());
+    if (failed(argument)) return failure();
+    captures.map(*argument, original);
+    return *argument;
+  };
+  for (Value original : anonymousHelperCaptures)
+    if (failed(capture(original))) return failure();
+  for (auto &entry : staged.values) {
+    auto value = capture(entry.second);
+    if (failed(value)) return failure();
+    entry.second = *value;
+  }
+  for (auto &entry : staged.writes) {
+    auto value = capture(entry.second);
+    if (failed(value)) return failure();
+    entry.second = *value;
+  }
+  auto ambient = capture(staged.ambient);
+  if (failed(ambient)) return failure();
+  staged.ambient = *ambient;
+  auto continuation = capture(staged.continuation);
+  if (failed(continuation)) return failure();
+  staged.continuation = *continuation;
   auto inside = OpBuilder::atBlockEnd(block);
   for (uint64_t ordinal = 0; ordinal < trips; ++ordinal) {
     context.iteration = ordinal;
@@ -1968,8 +2058,8 @@ LogicalResult Importer::lowerLiteralFor(const AstNode &statement, OpBuilder &at,
           loopTypeShape(boundary->second.contract().type, syntax->target);
       if (failed(shape))
         return failure();
-      induction.precision = std::max(induction.precision, shape->precision);
-      induction.words = std::max(induction.words, shape->words);
+      if (!induction.recordGeneratedValue(*shape))
+        return failure();
     }
     if (failed(payLoopEnvelope(induction, syntax->target, "binder")))
       return failure();
@@ -1986,10 +2076,10 @@ LogicalResult Importer::lowerLiteralFor(const AstNode &statement, OpBuilder &at,
     }
     // The logical ordinal has a singleton mathematical range, independently of
     // its unsigned carrier width. Body writes do not alter the next ordinal.
-    remember(*hidden, ac::detail::ValueKind::Integer,
+    { if (failed(remember(*hidden, ac::detail::ValueKind::Integer,
              IntegerInterval{llvm::APSInt::getUnsigned(ordinal),
                              llvm::APSInt::getUnsigned(ordinal + 1)},
-             integer);
+             integer))) return failure(); }
     auto binding = boundary == staged.boundaries.end()
                        ? inferredBoundary(syntax->target.string("id"), *hidden,
                                           syntax->target)
@@ -2124,6 +2214,9 @@ LogicalResult Importer::lowerLiteralFor(const AstNode &statement, OpBuilder &at,
     entry.second = remap(entry.second);
   staged.ambient = remap(staged.ambient);
   staged.continuation = remap(staged.continuation);
+  for (Value argument : block->getArguments())
+    { if (failed(forgetValueFacts(argument))) return failure(); }
+  valueFacts.commit(factCheckpoint);
   while (!block->empty())
     block->front().moveBefore(temporary);
   environment = std::move(staged);
@@ -2817,8 +2910,8 @@ LogicalResult Importer::predeclareStructuralInstances(
     if (!decl.system)
       for (auto [output, port] :
            llvm::zip(instance.op->getResults(), instance.outputs)) {
-        remember(output, port.sourceKind);
-        if (port.fixedBits) fixedValues.insert(output);
+        { if (failed(remember(output, port.sourceKind))) return failure(); }
+        if (port.fixedBits) { if (failed(markFixed(output))) return failure(); }
       }
     structuralCallSites.insert(sourceOccurrence(at, decl.symbol, call));
     structuralStorage.push_back(std::move(instance));
@@ -2892,9 +2985,9 @@ LogicalResult Importer::emitBehavioral(ModuleDecl &decl) {
   for (auto &port : decl.inputs) {
     auto value = graph->addArgument(port.type, module->getLoc());
     values[port.name] = value;
-    remember(value, port.sourceKind);
+    { if (failed(remember(value, port.sourceKind))) return failure(); }
     if (port.fixedBits)
-      fixedValues.insert(value);
+      { if (failed(markFixed(value))) return failure(); }
   }
   auto at = OpBuilder::atBlockEnd(graph);
   structuralCallSites.clear();
@@ -3223,7 +3316,7 @@ LogicalResult Importer::emitBehavioral(ModuleDecl &decl) {
     helperOwnerBindings.insert(target.string("id"));
     states.push_back({target.string("id").str(), *type, *init, storage, stmt});
     values[target.string("id")] = storage->getResult(0);
-    rememberState(storage->getResult(0), states.back());
+    if (failed(rememberState(storage->getResult(0), states.back()))) return failure();
     auto held = constant(bits(1, stmt, decl.symbol), 0, stmt, at, decl.symbol);
     if (failed(held))
       return failure();
@@ -3285,12 +3378,16 @@ LogicalResult Importer::emitBehavioral(ModuleDecl &decl) {
       return captureValue(block, captures[ordinal++], ruleOp->getLoc());
     };
     for (const auto &item : values)
-      environment.values[item.first()] = captureArgument();
+      { auto captured = captureArgument();
+        if (failed(captured)) return failure();
+        environment.values[item.first()] = *captured; }
     llvm::StringMap<SmallVector<Value>> capturedOutputs;
     for (const Instance &item : structuralStorage)
       for (Value output : item.op->getResults()) {
         (void)output;
-        capturedOutputs[item.name].push_back(captureArgument());
+        auto captured = captureArgument();
+        if (failed(captured)) return failure();
+        capturedOutputs[item.name].push_back(*captured);
       }
     evaluation.outputs = &capturedOutputs;
     activeRule = &evaluation;

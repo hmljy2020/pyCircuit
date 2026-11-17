@@ -76,14 +76,8 @@ FailureOr<SmallVector<Value>> TableQueryLowering::map(
       at, loc, ac::RuleOp::getOperationName(), {}, {}, {}, 1);
   auto block = new Block();
   temporary->getRegion(0).push_back(block);
-  auto cleanup = llvm::scope_exit([&] {
-    for (Value value : block->getArguments())
-      hooks.forgetFacts(value);
-    for (Operation &operation : *block)
-      for (Value value : operation.getResults())
-        hooks.forgetFacts(value);
-    temporary->erase();
-  });
+  auto cleanup = llvm::scope_exit([&] { temporary->erase(); });
+  auto buildMap = [&]() -> FailureOr<SmallVector<Value>> {
   SmallVector<Value> arguments;
   arguments.push_back(block->addArgument(
       hooks.bits(std::max(1u, llvm::Log2_64_Ceil(rows))), loc));
@@ -92,7 +86,7 @@ FailureOr<SmallVector<Value>> TableQueryLowering::map(
         cast<ac::TableType>(table.getType()).getElementType(), loc));
   for (Value capture : captures) {
     auto argument = block->addArgument(capture.getType(), loc);
-    hooks.copyFacts(capture, argument);
+    if (failed(hooks.copyFacts(capture, argument))) return failure();
     arguments.push_back(argument);
   }
   auto nested = OpBuilder::atBlockEnd(block);
@@ -161,18 +155,28 @@ FailureOr<SmallVector<Value>> TableQueryLowering::map(
   for (Value argument : arguments) {
     auto copied = published->addArgument(argument.getType(), loc);
     mapping.map(argument, copied);
-    hooks.copyFacts(argument, copied);
+    if (failed(hooks.copyFacts(argument, copied))) return failure();
   }
   auto target = OpBuilder::atBlockEnd(published);
   for (Operation &instruction : *block) {
     auto copy = target.clone(instruction, mapping);
     for (auto [original, result] :
          llvm::zip(instruction.getResults(), copy->getResults()))
-      hooks.copyFacts(original, result);
+      if (failed(hooks.copyFacts(original, result))) return failure();
   }
   if (!observeStageMapping(envelope, mapping))
     return emitError(loc) << "named callback clone maps exceed their envelope";
   return SmallVector<Value>(operation->getResults());
+  };
+  auto result = buildMap();
+  // Fact removal may reserve undo storage; finish it while SSA is alive and
+  // propagate failure before the scope guard destroys the temporary region.
+  for (Value value : block->getArguments())
+    if (failed(hooks.forgetFacts(value))) return failure();
+  for (Operation &operation : *block)
+    for (Value value : operation.getResults())
+      if (failed(hooks.forgetFacts(value))) return failure();
+  return result;
 }
 FailureOr<SmallVector<Value>> TableQueryLowering::stage(Block &scalar,
                                                         Value row,
@@ -301,13 +305,13 @@ TableQueryLowering::stage(Block &scalar, ValueRange rows, ValueRange receivers,
                     arguments[dependent.contains(original) ? tableSlot++
                                                            : captureSlot++];
                 mapping.map(original, argument);
-                hooks.copyFacts(original, argument);
+                if (failed(hooks.copyFacts(original, argument))) return failure();
               }
               for (Operation *operation : pending) {
                 auto copy = nested.clone(*operation, mapping);
                 for (auto [original, result] :
                      llvm::zip(operation->getResults(), copy->getResults()))
-                  hooks.copyFacts(original, result);
+                  if (failed(hooks.copyFacts(original, result))) return failure();
               }
               if (!observeStageMapping(envelope, mapping))
                 return emitError(loc)
@@ -395,7 +399,7 @@ TableQueryLowering::stage(Block &scalar, ValueRange rows, ValueRange receivers,
       for (auto [original, result] :
            llvm::zip(operation.getResults(), copy->getResults())) {
         scalars[original] = result;
-        hooks.copyFacts(original, result);
+        if (failed(hooks.copyFacts(original, result))) return failure();
       }
     }
   }

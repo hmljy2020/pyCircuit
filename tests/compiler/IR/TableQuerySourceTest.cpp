@@ -772,11 +772,13 @@ protected:
           copied.getParentBlock()->getParentOp()->getName().getStringRef() ==
               acir::ac::RuleOp::getOperationName())
         temporaryFacts.insert(copied);
+      return success();
     };
     hooks.forgetFacts = [&](Value value) {
       forgotten.push_back(value);
       facts.erase(value);
       temporaryFacts.erase(value);
+      return success();
     };
     return detail::TableQueryLowering(builder, builder.getUnknownLoc(), *module,
                                       budget, std::move(hooks));

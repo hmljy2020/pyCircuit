@@ -284,7 +284,7 @@ LogicalResult Importer::predeclareDirectCalls(ModuleDecl &decl, OpBuilder &at) {
         forwardCallBindings[name] = {plan->occurrence, true,
                                      static_cast<unsigned>(ordinal)};
         if (plan->resultFixedBits[ordinal])
-          fixedValues.insert(op->getResult(ordinal));
+          { if (failed(markFixed(op->getResult(ordinal)))) return failure(); }
       }
       return success();
     }
@@ -321,9 +321,9 @@ LogicalResult Importer::predeclareDirectCalls(ModuleDecl &decl, OpBuilder &at) {
                                     at.getArrayAttr(callee->typeArguments)),
                     at.getNamedAttr("occurrence", site)});
       for (auto [value, contract] : llvm::zip(op->getResults(), callee->results)) {
-        remember(value, contract.sourceKind);
+        { if (failed(remember(value, contract.sourceKind))) return failure(); }
         if (contract.fixedBits)
-          fixedValues.insert(value);
+          { if (failed(markFixed(value))) return failure(); }
       }
       directCallSites.try_emplace(
           site, DirectCallSite{op, false, std::move(*callee)});
@@ -817,7 +817,7 @@ LogicalResult Importer::bindProposals(ArrayRef<StateOwner> states,
             createOp(builder, loc, ac::StructGetOp::getOperationName(), {value},
                      TypeRange{selected}, {builder.getNamedAttr("field", name)})
                 ->getResult(0);
-        rememberStructField(value, selectedField, state.node);
+        if (failed(rememberStructField(value, selectedField, state.node))) return failure();
       }
       return value;
     };

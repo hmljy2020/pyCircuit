@@ -409,6 +409,46 @@ def Owner():
   EXPECT_EQ(operations<ac::SourceMethodCallOp>(*file).size(), 3u);
 }
 
+TEST_F(SourceTransactionCaptureTest,
+       LoopScalarReadsDoNotCopyExistingTableLayouts) {
+  auto file = typed(R"py(import pycircuit as ac
+@ac.struct
+class Row:
+    payload: ac.u8
+    tag: ac.u4
+def read(values: ac.table[65536, ac.u8], rows: ac.table[65536, Row]) -> ac.bits[257]:
+    total: ac.bits[257] = 0
+    for index in range(16):
+        value: ac.bits[257] = values[index]
+        projected: ac.bits[257] = rows[index].payload
+        total = total + value + projected
+    return total
+@ac.module
+def Top(values: ac.table[65536, ac.u8], rows: ac.table[65536, Row]) -> ac.bits[257]:
+    return read(values, rows)
+)py", "scalar_table_reads.py");
+  ASSERT_TRUE(file) << diagnostics;
+}
+
+TEST_F(SourceTransactionCaptureTest,
+       LoopAggregateUpdatesStillRequireGeneratedPayloadBudget) {
+  auto file = capture("aggregate_table_update.py", R"py(import pycircuit as ac
+def update(values: ac.table[65536, ac.u8]) -> ac.table[65536, ac.u8]:
+    result = values
+    for index in range(16):
+        result[index] = result[index] + 1
+    return result
+@ac.module
+def Top(values: ac.table[65536, ac.u8]) -> ac.table[65536, ac.u8]:
+    return update(values)
+)py");
+  ASSERT_TRUE(file);
+  EXPECT_TRUE(failed(lower(*file, "aggregate_table_update.py")));
+  EXPECT_TRUE(diagnostics.find("budget") != std::string::npos ||
+              diagnostics.find("resource") != std::string::npos)
+      << diagnostics;
+}
+
 TEST_F(SourceTransactionCaptureTest, OrdinaryHelperLoopsInlineIntoRuleAndMethodBodies) {
   auto file = typed(R"py(import pycircuit as ac
 def step(value: ac.u8) -> ac.u8:

@@ -75,6 +75,7 @@ class BookkeepingCase:
 
 @struct
 class Result:
+    nested_total: u8
     extent_one: u3
     subtract_first: u8
     subtract_last: u8
@@ -285,6 +286,17 @@ def bookkeeping_case(first: u8, second: u8, third: u8, seed: u8) -> BookkeepingC
     return BookkeepingCase(value=local15)
 
 
+@rule
+def nested_case(first: u8, second: u8, third: u8, seed: u8) -> u8:
+    values: table[3, u8] = (first, second, third)
+    total: u8 = seed
+    for outer in range(2):
+        for inner in range(3):
+            total = total + total + values[inner]
+        total = total + seed
+    return total
+
+
 @module
 def Top(
     one_value: u3,
@@ -308,6 +320,7 @@ def Top(
     )
     carrier_values = carrier_case(first, carrier)
     bookkeeping = bookkeeping_case(first, second, third, seed)
+    nested = nested_case(first, second, third, seed)
     return Result(
         extent_one=scan.extent_one,
         subtract_first=scan.subtract_first,
@@ -333,4 +346,5 @@ def Top(
         signed_shifted=carrier_values.signed_shifted,
         bookkeeping=bookkeeping.value,
         carrier=carrier_values.carrier,
+        nested_total=nested,
     )

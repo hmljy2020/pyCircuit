@@ -804,9 +804,9 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
   for (const Port &port : decl.inputs) {
     Value value = graph->addArgument(port.type, module->getLoc());
     moduleValues[port.name] = value;
-    remember(value, port.sourceKind);
+    { if (failed(remember(value, port.sourceKind))) return failure(); }
     if (port.fixedBits)
-      fixedValues.insert(value);
+      { if (failed(markFixed(value))) return failure(); }
   }
   // Keep SSA values, not StringMap iterators: later ordinary bindings and
   // compiler-owned Queue view captures can grow this lexical map.
@@ -1080,8 +1080,8 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
           auto zero = constant(internalBits(1, callable.declaration, decl.symbol), 0,
                                callable.declaration, inside, decl.symbol);
           if (failed(zero)) return failure();
-          remember(*zero, ac::detail::ValueKind::Boolean);
-          fixedValues.erase(*zero);
+          { if (failed(remember(*zero, ac::detail::ValueKind::Boolean))) return failure(); }
+          { if (failed(markFixed(*zero, false))) return failure(); }
           environment.values[intentName(port.name)] = *zero;
         }
     auto statementError = [&](const AstNode &site) {
@@ -1190,9 +1190,9 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
           if (loopControls.empty()) return statementError(statement) << "loop control requires an enclosing loop";
           auto zero = constant(internalBits(1, statement, decl.symbol), 0, statement, inside, decl.symbol);
           if (failed(zero)) return failure();
-          remember(*zero, ac::detail::ValueKind::Boolean);
-          fixedValues.erase(*zero);
-          remember(*zero, ac::detail::ValueKind::Boolean, std::nullopt, inside.getBoolAttr(false));
+          { if (failed(remember(*zero, ac::detail::ValueKind::Boolean))) return failure(); }
+          { if (failed(markFixed(*zero, false))) return failure(); }
+          { if (failed(remember(*zero, ac::detail::ValueKind::Boolean, std::nullopt, inside.getBoolAttr(false)))) return failure(); }
           values[loopControls.back().continuing] = *zero;
           if (statement.kind() == "Break") values[loopControls.back().live] = *zero;
           return success();
@@ -1204,7 +1204,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
               if (!callable.assignedFormals.contains(name) || callable.stateFormals.contains(name)) return success();
               auto enabled = trueValue(statement, inside, decl.symbol);
               if (failed(enabled)) return failure();
-              remember(*enabled, ac::detail::ValueKind::Boolean);
+              { if (failed(remember(*enabled, ac::detail::ValueKind::Boolean))) return failure(); }
               environment.values[intentName(name)] = *enabled;
               return success();
             });
@@ -1261,7 +1261,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
             if (failed(value)) return failure();
             auto info = valueInfo(*value);
             auto integer = dyn_cast_or_null<ac::MathIntAttr>(info.closedSourceConstant);
-            if (info.sourceKind != ac::detail::ValueKind::Integer || fixedValues.contains(*value) || !integer)
+            if (info.sourceKind != ac::detail::ValueKind::Integer || valueFacts.isFixed(*value) || !integer)
               return statementError(node) << "typed for range bounds require closed Integer values";
             llvm::APSInt number(integer.getCanonicalValue());
             if ((number.isUnsigned() && number.getActiveBits() > 63) ||
@@ -1341,7 +1341,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
             control = LoopControl{"$loop.live." + suffix, "$loop.continue." + suffix};
             auto live = trueValue(statement, inside, decl.symbol);
             if (failed(live)) return failure();
-            remember(*live, ac::detail::ValueKind::Boolean);
+            { if (failed(remember(*live, ac::detail::ValueKind::Boolean))) return failure(); }
             values[control->live] = *live;
             if (controlKinds.first && trips && !stateInduction) {
               auto boundary = environment.boundaries.find(inductionName);
@@ -1349,8 +1349,8 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
                   !values.contains(inductionName)) {
                 auto seed = constant(indexType, 0, statement, inside, decl.symbol);
                 if (failed(seed)) return failure();
-                remember(*seed, ac::detail::ValueKind::Integer);
-                fixedValues.erase(*seed);
+                { if (failed(remember(*seed, ac::detail::ValueKind::Integer))) return failure(); }
+                { if (failed(markFixed(*seed, false))) return failure(); }
                 values[inductionName] = *seed;
               }
             }
@@ -1425,8 +1425,8 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
               }
             }
             Value argument = block->addArgument(original.getType(), location);
-            remember(argument, kind);
-            if (fixedValues.contains(original)) fixedValues.insert(argument);
+            { if (failed(remember(argument, kind))) return failure(); }
+            if (valueFacts.isFixed(original)) { if (failed(markFixed(argument))) return failure(); }
             iteration.values[name] = argument;
             if (!iteration.boundaries.contains(name))
               iteration.boundaries[name] = inferredBoundary(name, argument, statement, true);
@@ -1437,8 +1437,8 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
               {loopAt.getNamedAttr("occurrence", sourceOccurrence(loopAt, decl.symbol, target)),
                loopAt.getNamedAttr("source_location", sourceSpan(loopAt, source.path, target)),
                loopAt.getNamedAttr("is_signed", loopAt.getBoolAttr(signedIndex))})->getResult(0);
-          remember(induction, ac::detail::ValueKind::Integer,
-              IntegerInterval{llvm::APSInt(lo, false), llvm::APSInt(last + 1, false)});
+          { if (failed(remember(induction, ac::detail::ValueKind::Integer,
+              IntegerInterval{llvm::APSInt(lo, false), llvm::APSInt(last + 1, false)}))) return failure(); }
           if (auto boundary = iteration.boundaries.find(inductionName);
               boundary != iteration.boundaries.end()) {
             auto converted = applyBindingBoundary(induction, boundary->second,
@@ -1463,25 +1463,29 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
             Value prior = iteration.values.lookup(inductionName);
             if (induction.getType() != prior.getType() &&
                 ac::areEquivalentHardwareTypes(induction.getType(), prior.getType()))
-              induction = boundaryBitsIdentity(induction, prior.getType(), target, loopAt, decl.symbol);
+              {
+                auto identity = boundaryBitsIdentity(induction, prior.getType(), target, loopAt, decl.symbol);
+                if (failed(identity)) return failure();
+                induction = *identity;
+              }
             auto selected = select(iteration.values.lookup(control->live), induction, prior,
                                    target, loopAt, decl.symbol);
             if (failed(selected)) return failure();
             induction = *selected;
-            remember(induction, facts.sourceKind, facts.interval);
+            { if (failed(remember(induction, facts.sourceKind, facts.interval))) return failure(); }
           }
           iteration.values[inductionName] = induction;
           if (formalInduction) {
             auto active = control ? FailureOr<Value>(iteration.values.lookup(control->live))
                                   : trueValue(statement, loopAt, decl.symbol);
             if (failed(active)) return failure();
-            remember(*active, ac::detail::ValueKind::Boolean);
+            { if (failed(remember(*active, ac::detail::ValueKind::Boolean))) return failure(); }
             auto key = intentName(inductionName);
             Value prior = iteration.values.lookup(key);
             Value intent = createOp(loopAt, location, ac::BitsBinaryOp::getOperationName(),
                 {prior, *active}, {prior.getType()},
                 {loopAt.getNamedAttr("opcode", loopAt.getStringAttr("or"))})->getResult(0);
-            remember(intent, ac::detail::ValueKind::Boolean);
+            { if (failed(remember(intent, ac::detail::ValueKind::Boolean))) return failure(); }
             iteration.values[key] = intent;
             if (failed(emitFormalWrite(inductionName, induction, target, loopAt, iteration, *active))) return failure();
           }
@@ -1507,8 +1511,12 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
                 isa<ac::BitsType>(value.getType()) &&
                 isa<ac::BitsType>(originalType) &&
                 ac::areEquivalentHardwareTypes(value.getType(), originalType)) {
-              value = boundaryBitsIdentity(value, originalType, statement,
+              {
+                auto identity = boundaryBitsIdentity(value, originalType, statement,
                                             loopAt, decl.symbol);
+                if (failed(identity)) return failure();
+                value = *identity;
+              }
             }
             if (!value || value.getType() != values.lookup(name).getType())
               return statementError(statement) << "typed for carried values must retain their declared hardware type";
@@ -1541,9 +1549,9 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
             Value result = complete->getResult(ordinal);
             Value authority = trips ? yielded[ordinal] : values.lookup(name);
             auto facts = valueInfo(authority);
-            remember(result, facts.sourceKind, facts.interval,
-                     trips ? Attribute() : facts.closedSourceConstant);
-            if (fixedValues.contains(authority)) fixedValues.insert(result);
+            { if (failed(remember(result, facts.sourceKind, facts.interval,
+                     trips ? Attribute() : facts.closedSourceConstant))) return failure(); }
+            if (valueFacts.isFixed(authority)) { if (failed(markFixed(result))) return failure(); }
             bool introduced = !values.contains(name);
             values[name] = result;
             if (introduced && iteration.boundaries.contains(name) &&
@@ -1552,9 +1560,9 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
           }
           if (trips && !assigned.contains(inductionName) && !controlKinds.first && !stateInduction) {
             Value final = values.lookup(inductionName);
-            remember(final, valueInfo(final).sourceKind,
+            { if (failed(remember(final, valueInfo(final).sourceKind,
                 IntegerInterval{llvm::APSInt(last, false), llvm::APSInt(last + 1, false)},
-                ac::MathIntAttr::get(b.getContext(), llvm::APSInt(last, false)));
+                ac::MathIntAttr::get(b.getContext(), llvm::APSInt(last, false))))) return failure(); }
           }
           Value live = control && controlKinds.first
                            ? values.lookup(control->live) : Value();
@@ -1576,7 +1584,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
             control = LoopControl{"$loop.live." + suffix, "$loop.continue." + suffix};
             auto live = trueValue(statement, inside, decl.symbol);
             if (failed(live)) return failure();
-            remember(*live, ac::detail::ValueKind::Boolean);
+            { if (failed(remember(*live, ac::detail::ValueKind::Boolean))) return failure(); }
             values[control->live] = *live;
           }
           llvm::StringSet<> assigned;
@@ -1647,8 +1655,8 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
             for (auto [block, local] : {std::pair{before, &conditionEnvironment},
                                        std::pair{after, &iteration}}) {
               Value argument = block->addArgument(original.getType(), location);
-              remember(argument, kind);
-              if (fixedValues.contains(original)) fixedValues.insert(argument);
+              { if (failed(remember(argument, kind))) return failure(); }
+              if (valueFacts.isFixed(original)) { if (failed(markFixed(argument))) return failure(); }
               local->values[name] = argument;
               if (!local->boundaries.contains(name))
                 local->boundaries[name] = inferredBoundary(name, argument, statement, true);
@@ -1681,8 +1689,8 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
           if (control) {
             auto continuing = trueValue(statement, loopAt, decl.symbol);
             if (failed(continuing)) return failure();
-            remember(*continuing, ac::detail::ValueKind::Boolean, std::nullopt,
-                     loopAt.getBoolAttr(true));
+            { if (failed(remember(*continuing, ac::detail::ValueKind::Boolean, std::nullopt,
+                     loopAt.getBoolAttr(true)))) return failure(); }
             iteration.values[control->continuing] = *continuing;
           }
           // Even a body without control statements owns the nearest loop scope.
@@ -1702,8 +1710,12 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
             if (next && next.getType() != originalType &&
                 isa<ac::BitsType>(next.getType()) && isa<ac::BitsType>(originalType) &&
                 ac::areEquivalentHardwareTypes(next.getType(), originalType)) {
-              next = boundaryBitsIdentity(next, originalType, statement,
+              {
+                auto identity = boundaryBitsIdentity(next, originalType, statement,
                                            loopAt, decl.symbol);
+                if (failed(identity)) return failure();
+                next = *identity;
+              }
             }
             if (!next || next.getType() != originalType)
               return statementError(statement) << "typed while carried values must retain their declared hardware type";
@@ -1712,8 +1724,8 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
           createOp(loopAt, location, scf::YieldOp::getOperationName(), nextValues, {}, {});
           for (auto [ordinal, name] : llvm::enumerate(carriedNames)) {
             Value original = values.lookup(name), result = loop->getResult(ordinal);
-            remember(result, valueInfo(original).sourceKind);
-            if (fixedValues.contains(original)) fixedValues.insert(result);
+            { if (failed(remember(result, valueInfo(original).sourceKind))) return failure(); }
+            if (valueFacts.isFixed(original)) { if (failed(markFixed(result))) return failure(); }
             values[name] = result;
           }
           Value live = control && controlKinds.first
@@ -1792,8 +1804,12 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
                   isa<ac::BitsType>(converted->getType()) &&
                   isa<ac::BitsType>(contract.type) &&
                   ac::areEquivalentHardwareTypes(converted->getType(), contract.type))
-                converted = boundaryBitsIdentity(*converted, contract.type,
+                {
+                  auto identity = boundaryBitsIdentity(*converted, contract.type,
                                                  element, inside, decl.symbol);
+                  if (failed(identity)) return failure();
+                  converted = *identity;
+                }
               yielded.push_back(*converted);
             }
           }
@@ -2154,13 +2170,21 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
           Value data = *proposal;
           if (data.getType() != port.type && isa<ac::BitsType>(data.getType()) &&
               isa<ac::BitsType>(port.type) && ac::areEquivalentHardwareTypes(data.getType(), port.type))
-            data = boundaryBitsIdentity(data, port.type, callable.declaration, inside, decl.symbol);
+            {
+              auto identity = boundaryBitsIdentity(data, port.type, callable.declaration, inside, decl.symbol);
+              if (failed(identity)) return failure();
+              data = *identity;
+            }
           yielded.push_back(data);
           Value intent = environment.values.lookup(intentName(port.name));
           Type predicateType = internalBits(1, callable.declaration, decl.symbol);
           if (intent.getType() != predicateType)
-            intent = boundaryBitsIdentity(intent, predicateType, callable.declaration,
+            {
+              auto identity = boundaryBitsIdentity(intent, predicateType, callable.declaration,
                                            inside, decl.symbol);
+              if (failed(identity)) return failure();
+              intent = *identity;
+            }
           yielded.push_back(intent);
         }
     return yielded;
@@ -2253,15 +2277,17 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
         if (callable.privateSpecialization && index < callable.actualFacts.size()) {
           auto facts = valueInfo(callable.actualFacts[index]);
           facts.value = argument;
-          recordValueInfo(std::move(facts));
-          if (arithmeticValues.contains(callable.actualFacts[index]))
-            arithmeticValues.insert(argument);
-        } else remember(argument, port.sourceKind);
+          { if (failed(recordValueInfo(std::move(facts)))) return failure(); }
+          if (valueFacts.isArithmetic(callable.actualFacts[index]))
+            { if (failed(markArithmetic(argument))) return failure(); }
+        } else { if (failed(remember(argument, port.sourceKind))) return failure(); }
         if (port.fixedBits)
-          fixedValues.insert(argument);
+          { if (failed(markFixed(argument))) return failure(); }
       }
       for (auto [name, original] : llvm::zip(captureNames, captures)) {
-        auto captured = captureValue(block, original, method->getLoc());
+        auto capturedResult = captureValue(block, original, method->getLoc());
+        if (failed(capturedResult)) return failure();
+        Value captured = *capturedResult;
         if (!name.empty()) values[name] = captured;
       }
       OpBuilder inside = OpBuilder::atBlockEnd(block);
@@ -2410,7 +2436,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
     for (const auto &entry : states) {
       Value oldQ = entry.second.op->getResult(0);
       actualValues[entry.first()] = oldQ;
-      rememberState(oldQ, entry.second);
+      if (failed(rememberState(oldQ, entry.second))) return failure();
     }
     FailureOr<SmallVector<Value>> arguments = SmallVector<Value>(callable.inputs.size());
     for (const auto &sourceBinding : (*plan)->bindings) {
@@ -2465,8 +2491,12 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
     for (auto [index, port] : llvm::enumerate(callable.inputs))
       if ((*arguments)[index].getType() != port.type && isa<ac::BitsType>(port.type) &&
           ac::areEquivalentHardwareTypes((*arguments)[index].getType(), port.type))
-        (*arguments)[index] = boundaryBitsIdentity((*arguments)[index], port.type,
-                                                   actuals[index], at, decl.symbol);
+        {
+          auto identity = boundaryBitsIdentity((*arguments)[index], port.type,
+                                               actuals[index], at, decl.symbol);
+          if (failed(identity)) return failure();
+          (*arguments)[index] = *identity;
+        }
     ruleArguments[invocation] = std::move(*arguments);
     std::string transactionName = name.str();
     unsigned collision = 1;
@@ -2490,8 +2520,8 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
     transactionsForCallable[name].push_back(transaction);
     for (auto [result, contract] : llvm::zip(transaction->getResults(),
                                             callable.resultContracts)) {
-      remember(result, contract.sourceKind);
-      if (contract.fixedBits) fixedValues.insert(result);
+      { if (failed(remember(result, contract.sourceKind))) return failure(); }
+      if (contract.fixedBits) { if (failed(markFixed(result))) return failure(); }
     }
     if (localDeclaration) {
       if (auto *binding = nestedRuleBinding(name)) {
@@ -2543,7 +2573,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
     for (const auto &entry : states) {
       Value oldQ = entry.second.op->getResult(0);
       ordinaryValues[entry.first()] = oldQ;
-      rememberState(oldQ, entry.second);
+      if (failed(rememberState(oldQ, entry.second))) return failure();
       protectedNames.insert(entry.first());
     }
     // A nested Rule can also have a shared Method entry in this inventory.
@@ -2661,7 +2691,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
       for (const auto &entry : states) {
         Value oldQ = entry.second.op->getResult(0);
         memoryValues[entry.first()] = oldQ;
-        rememberState(oldQ, entry.second);
+        if (failed(rememberState(oldQ, entry.second))) return failure();
       }
       auto bound = bindMemoryResults(statement, at, decl.symbol, memoryValues,
                                      instances, instanceStorage);
@@ -2679,7 +2709,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
       for (const auto &entry : states) {
         Value oldQ = entry.second.op->getResult(0);
         queueValues[entry.first()] = oldQ;
-        rememberState(oldQ, entry.second);
+        if (failed(rememberState(oldQ, entry.second))) return failure();
       }
       auto queued = bindQueueResults(statement, at, decl.symbol, queueValues,
                                      instances, instanceStorage);
@@ -2724,7 +2754,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
       for (const auto &entry : states) {
         Value oldQ = entry.second.op->getResult(0);
         ordinaryValues[entry.first()] = oldQ;
-        rememberState(oldQ, entry.second);
+        if (failed(rememberState(oldQ, entry.second))) return failure();
       }
       auto results = directModuleResults(statement.child("value"), at, decl.symbol, ordinaryValues, instances);
       if (failed(results)) return failure();
@@ -2746,7 +2776,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
       for (const auto &entry : states) {
         Value oldQ = entry.second.op->getResult(0);
         ordinaryValues[entry.first()] = oldQ;
-        rememberState(oldQ, entry.second);
+        if (failed(rememberState(oldQ, entry.second))) return failure();
       }
       llvm::StringSet<> forbidden;
       for (const auto &input : authoredInputs)
@@ -2793,7 +2823,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
       for (const auto &entry : states) {
         Value oldQ = entry.second.op->getResult(0);
         ordinaryValues[entry.first()] = oldQ;
-        rememberState(oldQ, entry.second);
+        if (failed(rememberState(oldQ, entry.second))) return failure();
       }
       auto target = statement.array("targets").size() == 1
           ? statement.item("targets", 0) : AstNode();
@@ -2892,7 +2922,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
            at.getNamedAttr("occurrence", sourceOccurrence(at, decl.symbol, statement))});
       helperOwnerBindings.insert(name);
       states[name] = {name.str(), *type, *initial, state, statement};
-      rememberState(state->getResult(0), states[name]);
+      if (failed(rememberState(state->getResult(0), states[name]))) return failure();
       continue;
     }
     if (statement.kind() == "Assign" &&
@@ -3050,7 +3080,7 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
       llvm::StringMap<Value> returnedValues(moduleValues);
       for (const auto &entry : states) {
         Value oldQ = entry.second.op->getResult(0);
-        rememberState(oldQ, entry.second);
+        if (failed(rememberState(oldQ, entry.second))) return failure();
         returnedValues[entry.first()] = oldQ;
       }
       auto outputs = lowerReturn(decl, call, at, returnedValues, instances);
@@ -3075,7 +3105,11 @@ LogicalResult Importer::emitSourceTransactions(ModuleDecl &decl) {
       transaction->getRegion(regionIndex).push_back(block);
       SmallVector<Value> arguments;
       for (Value original : captures)
-        arguments.push_back(captureValue(block, original, transaction->getLoc()));
+        {
+        auto captured = captureValue(block, original, transaction->getLoc());
+        if (failed(captured)) return failure();
+        arguments.push_back(*captured);
+        }
       OpBuilder inside = OpBuilder::atBlockEnd(block);
       auto path = trueValue(call, inside, decl.symbol);
       if (failed(path)) return failure();
@@ -3512,19 +3546,19 @@ FailureOr<SmallVector<Value>> Importer::sourceMethodCall(
     operation->setAttr("ac.formal_owner_bindings", at.getArrayAttr(formalOwnerBindings));
   for (auto [result, contract] :
        llvm::zip(operation->getResults(), resultContracts)) {
-    remember(result, contract.sourceKind);
+    { if (failed(remember(result, contract.sourceKind))) return failure(); }
     if (contract.fixedBits)
-      fixedValues.insert(result);
+      { if (failed(markFixed(result))) return failure(); }
   }
   for (auto [ordinal, index] : llvm::enumerate(proposalInputs)) {
     auto actual = (*actuals)[index];
     if (actual.kind() != "Name") continue;
     Value data = operation->getResult(publicResults + 2 * ordinal);
     Value intent = operation->getResult(publicResults + 2 * ordinal + 1);
-    remember(data, inputs[index].sourceKind);
-    if (inputs[index].fixedBits) fixedValues.insert(data);
-    remember(intent, ac::detail::ValueKind::Boolean);
-    fixedValues.erase(intent);
+    { if (failed(remember(data, inputs[index].sourceKind))) return failure(); }
+    if (inputs[index].fixedBits) { if (failed(markFixed(data))) return failure(); }
+    { if (failed(remember(intent, ac::detail::ValueKind::Boolean))) return failure(); }
+    { if (failed(markFixed(intent, false))) return failure(); }
     std::string intentName = ("$intent." + actual.string("id")).str();
     if (Value prior = values.lookup(intentName)) {
       // A lexical Rule formal is an ordinary SSA snapshot until the outer
@@ -3535,7 +3569,7 @@ FailureOr<SmallVector<Value>> Importer::sourceMethodCall(
       values[intentName] = createOp(at, node.location(b.getContext(), source.path),
           ac::BitsBinaryOp::getOperationName(), {prior, intent}, {prior.getType()},
           {at.getNamedAttr("opcode", at.getStringAttr("or"))})->getResult(0);
-      remember(values.lookup(intentName), ac::detail::ValueKind::Boolean);
+      { if (failed(remember(values.lookup(intentName), ac::detail::ValueKind::Boolean))) return failure(); }
       auto &callerInputs = activeSourceEffects->callable->inputs;
       auto formal = llvm::find_if(callerInputs, [&](const Port &port) {
         return port.name == actual.string("id");
@@ -3554,8 +3588,8 @@ FailureOr<SmallVector<Value>> Importer::sourceMethodCall(
                at.getNamedAttr("ac.location",
                                sourceSpan(at, source.path, node))})
               ->getResult(0);
-      remember(snapshot, formal->sourceKind);
-      if (formal->fixedBits) fixedValues.insert(snapshot);
+      { if (failed(remember(snapshot, formal->sourceKind))) return failure(); }
+      if (formal->fixedBits) { if (failed(markFixed(snapshot))) return failure(); }
       values[actual.string("id")] = snapshot;
       continue;
     }
@@ -3590,7 +3624,7 @@ FailureOr<std::optional<Value>> Importer::sourceEffectExpression(
           {at.getNamedAttr("state", at.getStringAttr(found->second.name)),
            at.getNamedAttr("selectors", at.getArrayAttr({})),
            at.getNamedAttr("occurrence", sourceOccurrence(at, owner, node))});
-      rememberState(read->getResult(0), found->second);
+      if (failed(rememberState(read->getResult(0), found->second))) return failure();
       return std::optional<Value>(read->getResult(0));
     }
   }

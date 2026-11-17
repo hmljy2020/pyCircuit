@@ -753,7 +753,18 @@ supported unary/comparison/Boolean expressions,
 nominal Struct construction and contextual Table literals. Calls are limited to
 `concat`, `enum_to_bits` and verified pure value helpers. This does not broaden
 the loop grammar or named Table callback restrictions; helper expansion is
-charged to the existing loop and source-wide budgets.
+charged to the existing loop and source-wide budgets. Loop reservations distinguish
+existing operand layouts from newly generated values: reading a scalar from an
+existing Table or projecting a Struct field does not reserve the entire input
+layout for each scalar intermediate. Direct Bits-element Table assignments reserve
+index and value evaluation separately from boundary conversions and the aggregate
+update. Each generated value is charged
+for its own layout, including TableMap row copies; existing operands retain full
+layout checks. Constant costs cover generated constants rather than charging each
+scalar constant for the destination Table layout. Nested aggregate and field-path
+updates, new aggregate construction and branch joins retain conservative costs.
+Reservations still precede lowering and are audited afterward; budget limits
+and atomic failure behavior are unchanged.
 Unary `not` and fixed-bit `~` retain their existing rules. Unary `+` and `-`
 are not implemented in this profile, including zero-trip bodies; binary
 subtraction such as `0 - 1` can produce a negative Integer.

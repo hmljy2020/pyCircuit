@@ -131,6 +131,11 @@ def oracle(row):
         else "x"
     )
     fields = (
+        # Two three-lane doubling folds, each followed by adding the seed.
+        binary(
+            73 * row["seed"] + 36 * row["first"] + 18 * row["second"] + 9 * row["third"],
+            8,
+        ),
         binary(row["one_value"], 3),
         binary(prefixes[0], 8),
         binary(prefixes[2], 8),
@@ -185,7 +190,7 @@ for index, carrier in enumerate(carrier_values):
         }
     )
 expected = [oracle(row) for row in rows]
-result_width = 252
+result_width = 260
 assert all(len(value) == result_width for value in expected)
 
 source = build / "source"
@@ -778,6 +783,16 @@ def Top(value: ac.u8) -> Out:
         "    return value"
     ),
     "later-oob": minimal("    entries: ac.table[2, ac.u8] = (1, 2)\n    for index in range(3):\n        value = entries[index]\n    return value"),
+    "aggregate-resource": """import pycircuit as ac
+def update(values: ac.table[65536, ac.u8]) -> ac.table[65536, ac.u8]:
+    result = values
+    for index in range(16):
+        result[index] = result[index] + 1
+    return result
+@ac.module
+def Top(values: ac.table[65536, ac.u8]) -> ac.table[65536, ac.u8]:
+    return update(values)
+""",
     "resource-bound": plain_helper("    for outer in range(300):\n        for inner in range(300):\n            value = value + 1\n    return value"),
     "bookkeeping-resource": minimal(bookkeeping_body),
     "literal-overflow": minimal("    for index in range(999999999999999999999999999999999999999999999999999999999999999999):\n        pass\n    return value"),
@@ -877,7 +892,7 @@ for name, invalid in negative_cases.items():
     assert all(snapshot(build / target) == value for target, value in protected_outputs.items()), name
     if name == "later-oob":
         assert "table index complete width is not proven in range" in rejected.stderr
-    if name in ("resource-bound", "bookkeeping-resource", "literal-overflow"):
+    if name in ("aggregate-resource", "resource-bound", "bookkeeping-resource", "literal-overflow"):
         assert any(word in rejected.stderr.lower() for word in ("budget", "resource", "limit", "literal", "representation"))
     if name == "bookkeeping-resource":
         assert any(word in rejected.stderr.lower() for word in ("branch", "join"))
@@ -928,6 +943,37 @@ for target in ("cpp", "verilog"):
     generated = build / ("closed-bounds-" + target)
     cli("emit", bounds_final, "--target", target, "-o", generated)
     binary = build / ("closed-bounds-" + target + "-runner")
+    if target == "cpp":
+        manifest = json.loads((generated / "generated.json").read_text())
+        run([args.cxx, "-std=c++20", "-pthread", "-I" + str(repo / "include"),
+             "-I" + str(generated),
+             *[generated / item["path"] for item in manifest["files"]
+               if item["path"].endswith(".cpp")], runtime, "-o", binary])
+    else:
+        run([sys.executable, repo / "cmake/verify_example.py", "--compile-system",
+             generated, "--output", binary, "--include", repo / "include",
+             "--verilator", args.verilator])
+    for workers in ((1, 2) if target == "cpp" else (1,)):
+        result = run([binary, "--cycles", "2", "--workers", str(workers)]
+                     if target == "cpp" else [binary, "+cycles=2"])
+        terminal = [json.loads(line) for line in result.stdout.splitlines()
+                    if line.startswith("{") and json.loads(line).get("kind") == "result"]
+        assert len(terminal) == 1 and terminal[0]["status"] == "TERMINATED", terminal
+        assert int(terminal[0]["epoch_time"]) == 4, terminal
+
+# Scalar expressions in repeated Table writes must not inherit the complete
+# destination layout. Assertions derive expected values from ordered writes.
+writes_source = source / "table_writes.py"
+writes_source.write_text((fixtures / "table-write-budget-design.py").read_text())
+writes_unit = build / "table-writes-unit"
+cli("compile", "-c", writes_source, "--source-root", source,
+    "--package-prefix", "bounded_for", "-o", writes_unit)
+writes_final = build / "table-writes.ac"
+cli("link", writes_unit, "--top", "bounded_for.table_writes.Top", "-o", writes_final)
+for target in ("cpp", "verilog"):
+    generated = build / ("table-writes-" + target)
+    cli("emit", writes_final, "--target", target, "-o", generated)
+    binary = build / ("table-writes-" + target + "-runner")
     if target == "cpp":
         manifest = json.loads((generated / "generated.json").read_text())
         run([args.cxx, "-std=c++20", "-pthread", "-I" + str(repo / "include"),
