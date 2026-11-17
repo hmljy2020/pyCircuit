@@ -284,11 +284,17 @@ Importer::behavioralCall(ModuleDecl &decl, const AstNode &call, OpBuilder &at,
   auto &writes = environment.writes;
   llvm::StringSet<> owners;
   for (auto [index, name] : llvm::enumerate(formals)) {
-    localValues[name] = captureValue(block, captures[index], ruleOp->getLoc());
+    {
+    auto captured = captureValue(block, captures[index], ruleOp->getLoc());
+    if (failed(captured)) return failure();
+    localValues[name] = *captured;
+    }
     environment.boundaries[name] = formalBoundaries[index];
   }
   for (auto [index, entry] : llvm::enumerate(lexicalValues)) {
-    auto value = captureValue(block, captures[formals.size() + index], ruleOp->getLoc());
+    auto valueResult = captureValue(block, captures[formals.size() + index], ruleOp->getLoc());
+    if (failed(valueResult)) return failure();
+    Value value = *valueResult;
     if (!entry.first.empty()) {
       localValues[entry.first] = value;
       environment.boundaries[entry.first] = inferredBoundary(entry.first, value, rule);
@@ -389,8 +395,8 @@ Importer::behavioralCall(ModuleDecl &decl, const AstNode &call, OpBuilder &at,
   // The Rule's completed return boundary publishes the same source authority
   // as a typed Module result. Registration remains a Rule even with no effects.
   for (auto [result, port] : llvm::zip(results, contract.outputs)) {
-    remember(result, port.sourceKind);
-    if (port.fixedBits) fixedValues.insert(result);
+    { if (failed(remember(result, port.sourceKind))) return failure(); }
+    if (port.fixedBits) { if (failed(markFixed(result))) return failure(); }
   }
   return results;
 }

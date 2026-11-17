@@ -208,14 +208,16 @@ Port Importer::structFieldPort(DictionaryAttr field, const AstNode &site) const 
   return {name.str(), type, site, std::nullopt, isa<ac::BitsType>(type)};
 }
 
-void Importer::rememberStructField(Value value, DictionaryAttr field,
+LogicalResult Importer::rememberStructField(Value value, DictionaryAttr field,
                                    const AstNode &site) {
   Port port = structFieldPort(field, site);
-  remember(value, port.sourceKind);
+  { if (failed(remember(value, port.sourceKind))) return failure(); }
   if (port.fixedBits)
-    fixedValues.insert(value);
+    { if (failed(markFixed(value))) return failure(); }
   else
-    fixedValues.erase(value);
+    { if (failed(markFixed(value, false))) return failure(); }
+
+  return success();
 }
 
 FailureOr<Value> Importer::structFieldZero(DictionaryAttr field,
@@ -224,8 +226,8 @@ FailureOr<Value> Importer::structFieldZero(DictionaryAttr field,
   auto value = constant(field.getAs<TypeAttr>("type").getValue(), 0, site, at,
                         symbol);
   if (succeeded(value) && field.get("source_constraint")) {
-    fixedValues.erase(*value);
-    remember(*value, ac::detail::ValueKind::Boolean, {}, b.getBoolAttr(false));
+    { if (failed(markFixed(*value, false))) return failure(); }
+    { if (failed(remember(*value, ac::detail::ValueKind::Boolean, {}, b.getBoolAttr(false)))) return failure(); }
   }
   return value;
 }

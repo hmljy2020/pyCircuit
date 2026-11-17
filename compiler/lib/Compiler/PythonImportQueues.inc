@@ -112,19 +112,19 @@ LogicalResult Importer::declareQueue(const AstNode &assignment, ModuleDecl &decl
                        at.getArrayAttr({TypeAttr::get(*payload)})),
        at.getNamedAttr("occurrence", site)});
   directCallSites.try_emplace(site, DirectCallSite{op});
-  fixedValues.insert(op->getResult(0));
-  fixedValues.insert(op->getResult(1));
-  fixedValues.insert(op->getResult(3));
+  { if (failed(markFixed(op->getResult(0)))) return failure(); }
+  { if (failed(markFixed(op->getResult(1)))) return failure(); }
+  { if (failed(markFixed(op->getResult(3)))) return failure(); }
   if (named) {
     auto constraint = sourceConstraint(contract);
     if (failed(constraint)) return failure();
     op->setAttr("ac.payload_constraint", *constraint);
     if (!seen.contains("in_valid")) op->setAttr("ac.source_unbound_push", at.getBoolAttr(true));
     if (!seen.contains("out_ready")) op->setAttr("ac.source_unbound_pop", at.getBoolAttr(true));
-    remember(op->getResult(2), contract.sourceKind);
-    if (contract.fixedBits) fixedValues.insert(op->getResult(2));
+    { if (failed(remember(op->getResult(2), contract.sourceKind))) return failure(); }
+    if (contract.fixedBits) { if (failed(markFixed(op->getResult(2)))) return failure(); }
   } else if (isa<ac::BitsType>(*payload))
-    fixedValues.insert(op->getResult(2));
+    { if (failed(markFixed(op->getResult(2)))) return failure(); }
   return success();
 }
 FailureOr<bool> Importer::bindQueueResults(
@@ -300,8 +300,10 @@ FailureOr<std::optional<Value>> Importer::queueRawExpression(
   if (ordinal == 3) return error() << "unknown Queue raw view or indirect Queue method value";
   Value raw = handle->op->getResult(ordinal);
   if (!isa<ac::ModuleOp>(at.getInsertionBlock()->getParentOp()))
-    raw = helperCapture(raw, at.getBlock(),
+    { auto captured = helperCapture(raw, at.getBlock(),
                         node.location(b.getContext(), source.path));
+    if (failed(captured)) return failure();
+    raw = *captured; }
   if (!raw)
     return error() << "Queue raw view is absent from its lexical capture frame";
   return std::optional<Value>(raw);

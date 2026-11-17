@@ -287,28 +287,29 @@ Value TableQueryLowering::compare(OpBuilder &builder, StringRef code, Value a,
       {builder.getNamedAttr("predicate", builder.getStringAttr(code))});
   return operation ? operation->getResult(0) : Value();
 }
-Value TableQueryLowering::widen(OpBuilder &builder, Value value, Type type) {
+FailureOr<Value> TableQueryLowering::widen(OpBuilder &builder, Value value, Type type) {
   if (!value)
-    return {};
+    return failure();
   if (ac::areEquivalentHardwareTypes(value.getType(), type))
     return value;
   auto actual = analysis.getPackedWidth(value.getType(), {}, package);
   auto target = analysis.getPackedWidth(type, {}, package);
   if (failed(actual) || failed(target)) {
     failedCharge = true;
-    return {};
+    return failure();
   }
   if (*actual == *target)
     return hooks.identity(value, type, builder);
   if (*actual > *target) {
     emitError(loc) << "Table query index widening cannot discard high bits";
     failedCharge = true;
-    return {};
+    return failure();
   }
   auto operation =
       op(builder, ac::BitsResizeOp::getOperationName(), {value}, {type},
          {builder.getNamedAttr("mode", builder.getStringAttr("zext"))});
-  return operation ? operation->getResult(0) : Value();
+  if (!operation) return failure();
+  return operation->getResult(0);
 }
 FailureOr<Value> TableQueryLowering::fold(Value table, StringRef kind) {
   auto type = cast<ac::TableType>(table.getType());
@@ -351,9 +352,9 @@ FailureOr<Value> TableQueryLowering::count(Value table, Type result) {
           [&](OpBuilder &inside,
               ValueRange arguments) -> FailureOr<SmallVector<Value>> {
             auto value = widen(inside, arguments[1], result);
-            if (!value)
+            if (failed(value))
               return failure();
-            return SmallVector<Value>{value};
+            return SmallVector<Value>{*value};
           });
   if (failed(widened))
     return failure();
@@ -533,8 +534,11 @@ FailureOr<Value> TableQueryLowering::gather(Value table, Value indices) {
       {*indexGrid, *ordinalGrid, *payloads}, {}, {*n, *m},
       {hooks.bits(1), sourceType.getElementType()},
       [&](OpBuilder &nested, ValueRange args) -> FailureOr<SmallVector<Value>> {
-        Value valid = compare(nested, "eq", widen(nested, args[1], compareType),
-                              widen(nested, args[2], compareType));
+        auto left = widen(nested, args[1], compareType);
+        if (failed(left)) return failure();
+        auto right = widen(nested, args[2], compareType);
+        if (failed(right)) return failure();
+        Value valid = compare(nested, "eq", *left, *right);
         if (!valid)
           return failure();
         return SmallVector<Value>{valid, args[3]};
@@ -558,8 +562,9 @@ FailureOr<Value> TableQueryLowering::gather(Value table, Value indices) {
       {sourceType.getElementType()},
       [&](OpBuilder &nested, ValueRange args) -> FailureOr<SmallVector<Value>> {
         Value bound = constant(nested, *m, guardType);
-        Value inRange =
-            compare(nested, "ult", widen(nested, args[1], guardType), bound);
+        auto index = widen(nested, args[1], guardType);
+        if (failed(index)) return failure();
+        Value inRange = compare(nested, "ult", *index, bound);
         if (!inRange)
           return failure();
         auto selected = hooks.select(inRange, args[2], args[3], nested);

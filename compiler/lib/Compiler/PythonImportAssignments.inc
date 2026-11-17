@@ -355,7 +355,7 @@ FailureOr<Value> Importer::readAccessField(Value base, DictionaryAttr field,
                          TypeRange{field.getAs<TypeAttr>("type").getValue()},
                          {at.getNamedAttr("field", field.getAs<StringAttr>("name"))})
                     ->getResult(0);
-  rememberStructField(result, field, site);
+  if (failed(rememberStructField(result, field, site))) return failure();
   return result;
 }
 
@@ -363,7 +363,7 @@ FailureOr<Value> Importer::readAccessIndex(Value base, Value index,
                                             const AstNode &node, OpBuilder &at,
                                             FlatSymbolRefAttr ownerSymbol) {
   if (isa<ac::BitsType>(base.getType())) {
-    if (!fixedValues.contains(base))
+    if (!valueFacts.isFixed(base))
       return error() << "bit index requires authoritative fixed bits, not a "
                         "Boolean or Integer carrier";
     ac::HardwareAnalysis analysis(*body);
@@ -389,8 +389,8 @@ FailureOr<Value> Importer::readAccessIndex(Value base, Value index,
                  TypeRange{internalBits(1, node, ownerSymbol)},
                  {at.getNamedAttr("low", literal(0, node, ownerSymbol))})
             ->getResult(0);
-    remember(result, std::nullopt);
-    fixedValues.insert(result);
+    { if (failed(remember(result, std::nullopt))) return failure(); }
+    { if (failed(markFixed(result))) return failure(); }
     return result;
   }
   auto type = dyn_cast<ac::TableType>(base.getType());
@@ -407,7 +407,7 @@ FailureOr<Value> Importer::readAccessIndex(Value base, Value index,
                {base, index}, results, {})
           ->getResult(0);
   if (isa<ac::BitsType>(result.getType()))
-    fixedValues.insert(result);
+    { if (failed(markFixed(result))) return failure(); }
   return result;
 }
 

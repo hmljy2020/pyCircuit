@@ -39,7 +39,7 @@ Importer::bindMemoryInputs(const MemoryCallPlan &plan, Operation *instance,
       if (failed(predicateView(*value, actual, symbol)))
         return failure();
     } else {
-      if (address && fixedValues.contains(*value) &&
+      if (address && valueFacts.isFixed(*value) &&
           !ac::areEquivalentHardwareTypes(value->getType(), plan.inputTypes[i]))
         return mlir::emitError(actual.location(b.getContext(), source.path))
                << "memory address width disagrees with depth-derived signature";
@@ -101,7 +101,7 @@ FailureOr<bool> Importer::bindMemoryResults(
     Value value = found->second.op->getResult(i);
     values[name] = value;
     if (plan->resultFixedBits[i])
-      fixedValues.insert(value);
+      { if (failed(markFixed(value))) return failure(); }
   }
   return true;
 }
@@ -189,7 +189,7 @@ FailureOr<SmallVector<Value>> Importer::memoryMethodCall(
     const Port &contract = *contracts[index];
     auto value = expression(actual, at, symbol, values, instances, contract.type);
     if (failed(value)) return failure();
-    if (index == 0 && fixedValues.contains(*value) &&
+    if (index == 0 && valueFacts.isFixed(*value) &&
         !ac::areEquivalentHardwareTypes(value->getType(), contract.type))
       return error() << "memory address width disagrees with depth-derived signature";
     auto converted = write && index == 1
@@ -204,7 +204,7 @@ FailureOr<SmallVector<Value>> Importer::memoryMethodCall(
     arguments.back() = createOp(at, node.location(b.getContext(), source.path),
         ac::BitsUnaryOp::getOperationName(), {*zero}, {contracts.back()->type},
         {at.getNamedAttr("opcode", at.getStringAttr("not"))})->getResult(0);
-    fixedValues.insert(arguments.back());
+    { if (failed(markFixed(arguments.back()))) return failure(); }
   }
   auto enabled = trueValue(node, at, symbol);
   if (failed(enabled)) return failure();
@@ -223,8 +223,8 @@ FailureOr<SmallVector<Value>> Importer::memoryMethodCall(
        at.getNamedAttr("ac.location", sourceSpan(at, source.path, node))});
   if (!results.empty()) {
     auto result = operation->getResult(0);
-    remember(result, receiver.outputs.front().sourceKind);
-    if (receiver.outputs.front().fixedBits) fixedValues.insert(result);
+    { if (failed(remember(result, receiver.outputs.front().sourceKind))) return failure(); }
+    if (receiver.outputs.front().fixedBits) { if (failed(markFixed(result))) return failure(); }
   }
   return SmallVector<Value>(operation->getResults());
 }

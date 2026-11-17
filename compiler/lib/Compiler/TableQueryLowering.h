@@ -57,10 +57,10 @@ struct TableQueryHooks {
   std::function<mlir::FailureOr<mlir::Value>(mlir::Value, mlir::Value,
                                              mlir::Value, mlir::OpBuilder &)>
       select;
-  std::function<mlir::Value(mlir::Value, mlir::Type, mlir::OpBuilder &)>
+  std::function<mlir::FailureOr<mlir::Value>(mlir::Value, mlir::Type, mlir::OpBuilder &)>
       identity;
-  std::function<void(mlir::Value, mlir::Value)> copyFacts;
-  std::function<void(mlir::Value)> forgetFacts;
+  std::function<mlir::LogicalResult(mlir::Value, mlir::Value)> copyFacts;
+  std::function<mlir::LogicalResult(mlir::Value)> forgetFacts;
 };
 
 // Logical bounds prepaid by the named fixed callback's first reservation.
@@ -127,7 +127,7 @@ private:
                      mlir::Value b);
   mlir::Value compare(mlir::OpBuilder &at, llvm::StringRef code, mlir::Value a,
                       mlir::Value b);
-  mlir::Value widen(mlir::OpBuilder &at, mlir::Value value, mlir::Type type);
+  mlir::FailureOr<mlir::Value> widen(mlir::OpBuilder &at, mlir::Value value, mlir::Type type);
   mlir::OpBuilder &at;
   mlir::Location loc;
   ac::HardwareAnalysis analysis;
