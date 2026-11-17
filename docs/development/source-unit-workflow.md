@@ -628,3 +628,25 @@ before Method summary analysis and Source unit publication. Publication rejects
 remaining SCF and source control-flow bridges. The public `source-import`
 diagnostic output retains its existing meaning; this intermediate boundary does
 not add a CLI output mode.
+
+### Integer expression transport
+
+Straight-line scalar Integer expression fragments can use an internal `i64`
+carrier in packages marked `ac.stage = "source-i64"`. Fixed Bits and Boolean
+values retain their source identities. `ac.source.integer_from_bits` records a
+bounded Integer's declared interval and signed interpretation;
+`ac.source.integer_to_bits` records an explicit hardware consumption boundary.
+Local expression results use ordinary SSA and `arith` operations.
+
+`ac-lower-source-integer-expressions` runs after source control-flow normalization
+and before Method summary analysis. It consumes only IR, folds static fragments,
+and lowers runtime fragments to the existing four-state Bits operations before
+any ordinary arithmetic simplification. The same registered pass can consume
+printed and reparsed transport with `pycircuit-opt`. Publication and interface
+extraction reject residual transport. This stage does not change helper public
+signatures, AST loop expansion, state ownership or transaction identity.
+
+The internal carrier is 64 bits; this first stage does not diagnose mathematical
+integer overflow or minimize expression widths. Existing declaration boundaries
+and static shift-count admission remain required. Unsupported fragment consumers
+retain their existing lowering selected before transport construction.

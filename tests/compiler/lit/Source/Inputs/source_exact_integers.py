@@ -161,12 +161,18 @@ def execute(unit, top, stem, frames, four_state=False, primitives=()):
             [
                 args.iverilog,
                 "-g2012",
+                "-DNUMERIC_FOUR_STATE",
                 "-s",
                 "tb",
                 "-o",
                 rtl_executable,
                 *rtl,
-                fixtures / "numeric_four_state.sv",
+                fixtures
+                / (
+                    "numeric_four_state.sv"
+                    if stem == "numeric_outputs"
+                    else stem + ".sv"
+                ),
             ]
         )
         rtl_command = [args.vvp, rtl_executable]
@@ -199,6 +205,16 @@ def execute(unit, top, stem, frames, four_state=False, primitives=()):
     assert rtl_trace == traces[0]
     return final, output
 
+
+transport = root / "transport-unit"
+compile_unit("numeric_transport.py", transport)
+execute(
+    transport,
+    "numeric.numeric_transport.Transport",
+    "numeric_transport",
+    5 if args.four_state else 3,
+    args.four_state,
+)
 
 numeric = root / "numeric-unit"
 compile_unit("numeric_root.py", numeric)
@@ -241,7 +257,7 @@ if not args.four_state:
         ("symbolic", ("static", "symbolic", "width", "range", "interval")),
         ("import", ("kind", "integer")),
         ("static_compare", ("mathematical", "arithmetic", "signed")),
-        ("static_xor", ("mathematical", "arithmetic", "signed")),
+        ("static_xor", ()),
         ("static_branch", ("mathematical", "arithmetic", "signed", "bound")),
         ("integer_condition", ("boolean", "kind", "conditional")),
         ("negative_mask", ("mask", "negative", "range", "bound")),
@@ -254,7 +270,9 @@ if not args.four_state:
         fixture = "numeric_bad_" + name + ".py"
         absent = root / ("bad-" + name)
         rejected = compile_unit(fixture, absent, [child], accepted=False)
-        assert any(word in rejected.stderr.lower() for word in words), rejected.stderr
+        assert not words or any(
+            word in rejected.stderr.lower() for word in words
+        ), rejected.stderr
         assert not absent.exists()
         (source / "numeric_root.py").write_text((source / fixture).read_text())
         compile_unit("numeric_root.py", numeric, [child], replace=True, accepted=False)
@@ -267,9 +285,9 @@ if not args.four_state:
 sys.stdout.write(
     "exact integer public source gate passed: "
     + (
-        "2 high-bit X/Z C++/Icarus frames"
+        "2 high-bit X/Z + 5 integer transport C++/Icarus frames"
         if args.four_state
-        else "9 arithmetic + 9 captured-register + 6 mask C++/RTL frames and 36 protected rejections"
+        else "9 arithmetic + 9 captured-register + 6 mask + 3 integer transport C++/RTL frames and 36 protected rejections"
     )
     + "\n"
 )

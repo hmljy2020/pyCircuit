@@ -60,6 +60,7 @@ compilePythonSourceUnit(ModuleOp transport, DictionaryAttr sourceOwner,
   lowering.addPass(detail::createInferSourceBindingsPass(sourceOwner, headers));
   lowering.addPass(detail::createLowerPythonSourcePass(sourceOwner, headers));
   lowering.addPass(acir::createNormalizeSourceControlFlowPass());
+  lowering.addPass(acir::createLowerSourceIntegerExpressionsPass());
   lowering.addPass(acir::createAnalyzeSourceMethodSummariesPass());
   if (failed(lowering.run(*body)))
     return failure();

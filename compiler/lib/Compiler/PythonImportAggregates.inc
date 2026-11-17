@@ -1165,6 +1165,8 @@ FailureOr<Value> Importer::unsignedBoundary(Value value, Type target,
     return result;
   };
   auto targetBits = dyn_cast<ac::BitsType>(target);
+  if (targetBits && value.getType().isInteger(64))
+    return fixedResult(integerBoundary(value, target, node, at, symbol));
   auto equivalent = equivalentBoundaryTypes(value.getType(), target,
                                             at.getBlock()->getParentOp());
   if (failed(equivalent))

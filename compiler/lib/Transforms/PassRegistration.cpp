@@ -12,6 +12,7 @@ namespace acir {
 // assembled by each tool.
 void registerACIRPasses() {
   registerPass([] { return createNormalizeSourceControlFlowPass(); });
+  registerPass([] { return createLowerSourceIntegerExpressionsPass(); });
   registerPass([] { return createExtractSourceInterfacePass(); });
   registerPass([] { return createSimplifyRecordWiresPass(); });
   registerPass([] { return createAnalyzeSourceMethodSummariesPass(); });

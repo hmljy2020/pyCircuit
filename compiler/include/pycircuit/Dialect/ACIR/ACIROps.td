@@ -56,6 +56,23 @@ def ACIR_SourcePredicateOp : ACIR_Op<"source.predicate", [Pure]> {
   let hasVerifier = 1;
 }
 
+def ACIR_SourceIntegerFromBitsOp : ACIR_Op<"source.integer_from_bits", [Pure]> {
+  let summary = "Transport a declared finite Integer into source i64 arithmetic";
+  let arguments = (ins ACIR_BitsType:$input, DictionaryAttr:$domain,
+      BoolAttr:$is_signed, DictionaryAttr:$occurrence,
+      DictionaryAttr:$source_location);
+  let results = (outs I64:$result);
+  let hasVerifier = 1;
+}
+
+def ACIR_SourceIntegerToBitsOp : ACIR_Op<"source.integer_to_bits", [Pure]> {
+  let summary = "Check a source integer expression at a finite Bits boundary";
+  let arguments = (ins I64:$input, DictionaryAttr:$occurrence,
+      DictionaryAttr:$source_location);
+  let results = (outs ACIR_BitsType:$result);
+  let hasVerifier = 1;
+}
+
 def ACIR_ValueBindingOp : ACIR_Op<"value.binding"> {
   let summary = "Bind one proof-scoped ValueID to actual SSA and controls";
   let arguments = (ins AnyType:$value, I1:$valid, I1:$path,

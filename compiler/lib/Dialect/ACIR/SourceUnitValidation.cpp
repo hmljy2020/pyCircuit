@@ -133,7 +133,15 @@ FailureOr<SourceUnitStructure> verifyStructure(mlir::ModuleOp unit, bool body,
                                                detail::EmitError emitError) {
   if (!unit)
     return emitError() << "source unit is required";
+  if (auto stage = unit->getAttrOfType<StringAttr>("ac.stage");
+      stage && stage.getValue() == "source-i64")
+    return emitError() << "source publication requires lowered integer expressions";
   auto forged = unit.walk([&](Operation *operation) {
+    if (operation->getName().getDialectNamespace() == "arith" ||
+        isa<SourceIntegerFromBitsOp, SourceIntegerToBitsOp>(operation)) {
+      operation->emitOpError("source publication requires lowered integer expressions");
+      return WalkResult::interrupt();
+    }
     if (operation->getName().getDialectNamespace() == "scf" ||
         isa<SourceIndexOp, SourcePredicateOp>(operation)) {
       operation->emitOpError("source publication requires normalized control flow");
