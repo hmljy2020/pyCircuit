@@ -4,7 +4,10 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Pass/Pass.h"
+#include "pycircuit/Dialect/ACIR/SourceMethodAnalysis.h"
 #include "pycircuit/Dialect/ACIR/SourceTransactionStateAnalysis.h"
 #include "pycircuit/Dialect/ACIR/SourceUnitValidation.h"
 #include "llvm/ADT/DenseSet.h"
@@ -233,14 +236,147 @@ LogicalResult verifySymbolClosure(ModuleOp package,
   return success(!result.wasInterrupted());
 }
 
+LogicalResult verifyRegistrationOccurrences(ModuleOp package) {
+  for (auto module : package.getOps<ac::ModuleOp>()) {
+    auto &body = module.getBody().front();
+    if (body.getOps<ac::SourceMethodCallOp>().empty())
+      continue;
+    SmallVector<std::pair<DictionaryAttr, Operation *>> registrations;
+    for (Operation &operation : body) {
+      if (isa<ac::SourceMethodCallOp, ac::SourceTransactionOp>(operation))
+        registrations.emplace_back(
+            operation.getAttrOfType<DictionaryAttr>("occurrence"), &operation);
+    }
+    auto compare = [](const auto &left, const auto &right) {
+      return ac::detail::compareClosedSourceStructure(left.first, right.first);
+    };
+    llvm::stable_sort(registrations, [&](const auto &left, const auto &right) {
+      return compare(left, right) < 0;
+    });
+    for (auto [left, right] :
+         llvm::zip(registrations, ArrayRef(registrations).drop_front()))
+      if (compare(left, right) == 0)
+        return right.second->emitOpError() << "registration occurrence must be unique";
+  }
+  return success();
+}
+
+struct SimplifyLinkedRegistrationsPass
+    : PassWrapper<SimplifyLinkedRegistrationsPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SimplifyLinkedRegistrationsPass)
+
+  StringRef getArgument() const final {
+    return "ac-simplify-linked-registrations";
+  }
+  StringRef getDescription() const final {
+    return "Replace transparent linked source Rule registrations with Module calls";
+  }
+  void runOnOperation() final {
+    ModuleOp package = getOperation();
+    OwningOpRef<ModuleOp> candidate(cast<ModuleOp>(package->clone()));
+    if (failed(verifyLinkedSourceACIR(*candidate)))
+      return signalPassFailure();
+
+    for (auto module : candidate->getOps<ac::ModuleOp>()) {
+      auto transactions = module.getBody().front().getOps<ac::SourceTransactionOp>();
+      for (auto transaction : llvm::make_early_inc_range(transactions)) {
+        auto entry = ac::getSourceRegistrationEntry(transaction);
+        if (failed(entry))
+          return signalPassFailure();
+        if (!*entry)
+          continue;
+
+        auto &registration = **entry;
+        OpBuilder builder(transaction);
+        IRMapping mapping;
+        Value path = registration.call.getPath();
+        builder.clone(*path.getDefiningOp(), mapping);
+        for (auto [argument, ordinal] : llvm::zip_equal(
+                 registration.call.getArguments(),
+                 registration.argumentCaptureOrdinals))
+          mapping.map(argument, transaction.getCaptures()[ordinal]);
+        auto call = cast<ac::SourceMethodCallOp>(
+            builder.clone(*registration.call, mapping));
+        call->setAttr("ac.registration_name", transaction.getNameAttr());
+        for (auto [result, replacement] :
+             llvm::zip(transaction.getResults(), call.getResults())) {
+          // The wrapper can carry distinct type provenance on its public SSA.
+          replacement.setType(result.getType());
+          result.replaceAllUsesWith(replacement);
+        }
+        transaction.erase();
+      }
+    }
+    if (failed(verifyLinkedSourceACIR(*candidate)))
+      return signalPassFailure();
+    package.getBodyRegion().takeBody(candidate->getBodyRegion());
+  }
+};
+
+struct ElideLinkedTrueGuardsPass
+    : PassWrapper<ElideLinkedTrueGuardsPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ElideLinkedTrueGuardsPass)
+
+  StringRef getArgument() const final { return "ac-elide-linked-true-guards"; }
+  StringRef getDescription() const final {
+    return "Omit literal true Method guards and call paths in linked source ACIR";
+  }
+  void runOnOperation() final {
+    ModuleOp package = getOperation();
+    OwningOpRef<ModuleOp> candidate(cast<ModuleOp>(package->clone()));
+    if (failed(verifyLinkedSourceACIR(*candidate)))
+      return signalPassFailure();
+
+    auto registrations = candidate->walk([](ac::SourceTransactionOp transaction) {
+      if (!transaction->hasAttr("ac.registration_entry"))
+        return WalkResult::advance();
+      transaction.emitOpError()
+          << "run --ac-simplify-linked-registrations before eliding conditions";
+      return WalkResult::interrupt();
+    });
+    if (registrations.wasInterrupted())
+      return signalPassFailure();
+
+    candidate->walk([](ac::SourceMethodOp method) {
+      auto &guard = method.getGuard().front();
+      auto yield = cast<ac::YieldOp>(guard.getTerminator());
+      auto values = yield.getValues();
+      if (values.size() == 1 &&
+          llvm::hasSingleElement(guard.without_terminator()) &&
+          values.front().getDefiningOp() == &guard.front() &&
+          ac::isSourceLiteralTrue(values.front()))
+        yield->setOperands(ValueRange{});
+    });
+    auto marker = UnitAttr::get(package.getContext());
+    candidate->walk([&](ac::SourceMethodCallOp call) {
+      if (ac::isSourceLiteralTrue(call.getPath())) {
+        call->eraseOperands(0);
+        call->setAttr("ac.implicit_path", marker);
+      }
+    });
+    (*candidate)->setAttr("ac.linked_implicit_guards", marker);
+    if (failed(verifyLinkedSourceACIR(*candidate)))
+      return signalPassFailure();
+    package->setAttr("ac.linked_implicit_guards", marker);
+    package.getBodyRegion().takeBody(candidate->getBodyRegion());
+  }
+};
+
 } // namespace
 
+void registerSimplifyLinkedRegistrationsPass() {
+  PassRegistration<SimplifyLinkedRegistrationsPass>();
+}
+
+void registerElideLinkedTrueGuardsPass() {
+  PassRegistration<ElideLinkedTrueGuardsPass>();
+}
+
 LogicalResult verifyLinkedSourceACIR(ModuleOp package) {
-  auto stage = package->getAttrOfType<StringAttr>("ac.stage");
-  if (!stage || stage.getValue() != "linked-source" ||
-      package->hasAttr("ac.unit_kind"))
+  if (!ac::detail::isLinkedSourcePackage(package))
     return package.emitOpError() << "expected ac.stage = linked-source";
-  if (failed(ac::verifySourceOperations(package)))
+  if (failed(ac::verifySourceOperations(package)) ||
+      failed(verifyRegistrationOccurrences(package)))
     return failure();
   auto systems = package.getOps<ac::SystemOp>();
   if (!llvm::hasSingleElement(systems))

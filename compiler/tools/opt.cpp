@@ -6,6 +6,7 @@
 #include "pycircuit/Conversion/ACIRToGFIR.h"
 #include "pycircuit/Conversion/GFIRToHWIR.h"
 #include "pycircuit/Transforms/Passes.h"
+#include "Compiler/LinkedSourceACIR.h"
 #include "Compiler/SourceRuleWrites.h"
 #include "Compiler/SourceMemoryBindings.h"
 
@@ -27,6 +28,8 @@ int main(int argc, char **argv) {
   acir::registerGFIRToHWIRPasses();
   acir::compiler::detail::registerSourceCompilerPasses();
   acir::compiler::detail::registerSourceBindingsPass();
+  acir::compiler::registerSimplifyLinkedRegistrationsPass();
+  acir::compiler::registerElideLinkedTrueGuardsPass();
   mlir::registerCanonicalizerPass();
   mlir::registerCSEPass();
   return mlir::asMainReturnCode(

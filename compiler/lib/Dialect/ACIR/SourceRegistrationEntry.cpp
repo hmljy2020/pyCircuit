@@ -4,8 +4,8 @@
 
 using namespace mlir;
 namespace acir::ac {
-namespace {
-bool directTrue(BitsConstantOp constant) {
+bool isSourceLiteralTrue(Value input) {
+  auto constant = input ? input.getDefiningOp<BitsConstantOp>() : BitsConstantOp();
   if (!constant || failed(constant.verifyInvariantsImpl()) ||
       failed(constant.verify()))
     return false;
@@ -26,6 +26,24 @@ bool directTrue(BitsConstantOp constant) {
   if (auto boolean = dyn_cast_or_null<BoolAttr>(value))
     return boolean.getValue();
   return false;
+}
+
+namespace {
+/// Return the clock/reset SSA values named by the lexical Module contract.
+std::pair<Value, Value> registrationDomain(ModuleOp module) {
+  auto domain = module->getAttrOfType<DictionaryAttr>("ac.domain_inputs");
+  if (!domain || domain.size() != 2 || !module.getBody().hasOneBlock())
+    return {};
+  auto &body = module.getBody().front();
+  auto input = [&](StringRef name) -> Value {
+    auto index = domain.getAs<IntegerAttr>(name);
+    if (!index || !index.getType().isSignlessInteger(64) ||
+        index.getInt() < 0 ||
+        static_cast<uint64_t>(index.getInt()) >= body.getNumArguments())
+      return {};
+    return body.getArgument(index.getInt());
+  };
+  return {input("clock"), input("reset")};
 }
 } // namespace
 
@@ -51,18 +69,18 @@ getSourceRegistrationEntry(SourceTransactionOp transaction) {
       std::distance(guard.begin(), guard.end()) != 2 ||
       std::distance(body.begin(), body.end()) != 3)
     return error() << "only a true guard and one transparent Method call";
-  auto guardConstant = dyn_cast<BitsConstantOp>(guard.front());
   auto guardYield = dyn_cast<YieldOp>(guard.back());
-  auto pathConstant = dyn_cast<BitsConstantOp>(body.front());
   auto call = dyn_cast<SourceMethodCallOp>(*std::next(body.begin()));
   auto resultYield = dyn_cast<YieldOp>(body.back());
-  if (!call || failed(call.verifyInvariantsImpl()))
+  if (!call)
+    return error() << "one transparent Method call";
+  if (failed(call.verifyInvariantsImpl()))
     return failure();
-  if (!directTrue(guardConstant) || !guardYield ||
-      guardYield.getValues().size() != 1 ||
-      guardYield.getValues()[0] != guardConstant.getResult() ||
-      !directTrue(pathConstant) || !call || !resultYield ||
-      call.getPath() != pathConstant.getResult())
+  if (!guardYield || guardYield.getValues().size() != 1 ||
+      guardYield.getValues()[0].getDefiningOp() != &guard.front() ||
+      !isSourceLiteralTrue(guardYield.getValues()[0]) || !resultYield ||
+      !call.getPath() || call.getPath().getDefiningOp() != &body.front() ||
+      !isSourceLiteralTrue(call.getPath()))
     return error() << "direct true guard/path constants and exact call forwarding";
   if (!call.getInstancePath().empty() ||
       call->hasAttr("ac.reference") || call->hasAttr("receiver_kind") ||
@@ -113,19 +131,34 @@ getSourceRegistrationEntry(SourceTransactionOp transaction) {
                                      signature.getResult(index))))
       return error() << "the ordered public result prefix";
   }
-  auto domain = module->getAttrOfType<DictionaryAttr>("ac.domain_inputs");
-  auto clock = domain ? domain.getAs<IntegerAttr>("clock") : IntegerAttr();
-  auto reset = domain ? domain.getAs<IntegerAttr>("reset") : IntegerAttr();
-  auto &moduleBody = module.getBody().front();
-  if (!domain || domain.size() != 2 || !clock || !reset ||
-      !clock.getType().isSignlessInteger(64) ||
-      !reset.getType().isSignlessInteger(64) ||
-      clock.getInt() < 0 || reset.getInt() < 0 ||
-      static_cast<uint64_t>(clock.getInt()) >= moduleBody.getNumArguments() ||
-      static_cast<uint64_t>(reset.getInt()) >= moduleBody.getNumArguments() ||
-      transaction.getClk() != moduleBody.getArgument(clock.getInt()) ||
-      transaction.getRst() != moduleBody.getArgument(reset.getInt()))
+  auto [clock, reset] = registrationDomain(module);
+  if (transaction.getClk() != clock || transaction.getRst() != reset)
     return error() << "the lexical Method clock/reset domain";
   return std::optional<SourceRegistrationEntryView>(std::move(view));
+}
+
+LogicalResult verifyLinkedSourceRegistration(SourceMethodCallOp call,
+                                             const SourceMethodView &method) {
+  auto module = cast<ModuleOp>(call->getParentOp());
+  if (!method.definition || method.module != module ||
+      !call.getInstancePath().empty() || call->hasAttr("ac.reference") ||
+      call->hasAttr("receiver_kind") || call->hasAttr("ancestor_depth") ||
+      call->hasAttr("ac.formal_owner_bindings"))
+    return call.emitOpError()
+           << "registration requires a local Method definition without owner bindings";
+  if (!call.hasImplicitPath() && !isSourceLiteralTrue(call.getPath()))
+    return call.emitOpError() << "registration path must be a true constant";
+  auto [clock, reset] = registrationDomain(module);
+  if (!clock || !reset)
+    return call.emitOpError() << "registration requires the lexical clock/reset domain";
+  if (call.getOccurrence() == method.getDeclaration()) {
+    auto visibility = method.getVisibility();
+    if (!visibility || visibility.getValue() != "private")
+      return call.emitOpError() << "autonomous Rule requires a private Method body";
+  }
+  for (auto result : call.getResults().drop_front(method.getNumPublicResults()))
+    if (!result.use_empty())
+      return call.emitOpError() << "registration may expose only public Method results";
+  return success();
 }
 } // namespace acir::ac

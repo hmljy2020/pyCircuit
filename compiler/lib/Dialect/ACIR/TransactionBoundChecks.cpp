@@ -185,6 +185,9 @@ LogicalResult guardYieldPredicate(const HardwareAnalysis &analysis,
            << "guard/body requires one block, matching arguments and final "
               "ac.yield";
   auto &yield = region.front().back();
+  if (yield.getNumOperands() == 0 && isa<SourceMethodOp>(operation) &&
+      detail::allowsImplicitSourceConditions(operation))
+    return success();
   if (yield.getNumOperands() != 1)
     return yield.emitOpError() << "guard must yield exactly one predicate";
   return predicate(analysis, yield.getOperand(0), bindings, &yield,
@@ -755,9 +758,16 @@ LogicalResult HardwareAnalysis::verifyTransactionSurfaceOperation(
     return guardYieldPredicate(*this, scope, method, requireResolved);
   }
   if (auto call = dyn_cast<SourceMethodCallOp>(operation)) {
-    if (failed(predicate(*this, call.getPath(), scope, call,
-                         "method call path", requireResolved)))
-      return failure();
+    if (!call.hasImplicitPath()) {
+      Value path = call.getPath();
+      if (!path)
+        return call.emitOpError() << "method call requires a Bits path operand";
+      if (failed(predicate(*this, path, scope, call, "method call path",
+                           requireResolved)))
+        return failure();
+    } else if (!detail::allowsImplicitSourceConditions(call)) {
+      return call.emitOpError() << "implicit path requires a marked linked-source package";
+    }
     // The caller's bindings resolve the actuals; the resolver derives the
     // receiver's bindings from this call site (r8 review batch 1).
     auto resolved = resolveSourceMethodCall(
@@ -769,6 +779,8 @@ LogicalResult HardwareAnalysis::verifyTransactionSurfaceOperation(
       return failure();
     if (failed(verifySourceMethodCallSignature(call, scope, *resolved, *this)))
       return failure();
+    if (isa<ModuleOp>(call->getParentOp()))
+      return verifyLinkedSourceRegistration(call, resolved->method);
     auto caller = call->getParentOfType<SourceMethodOp>();
     auto lexical = call->getParentOfType<ModuleOp>();
     return verifySourceFormalOwnerBindings(

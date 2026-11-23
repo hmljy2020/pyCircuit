@@ -571,9 +571,49 @@ parameters and relative receivers. Method definitions and calls, including
 FIFO calls and calls in unused definitions, retain their source locations.
 
 The verifier reads the artifact on its own and checks the selected top,
-symbol closure, canonical builtin declarations and Method bindings. Rule
-admission, FIFO wiring and high-level GFSIM generation are downstream stages.
-Use `pycircuit link` to produce final hardware for the C++ and Verilog emitters.
+symbol closure, canonical builtin declarations and Method bindings. To simplify
+the transparent Rule registrations in this artifact, run the explicit pass:
+
+```bash
+"$BUILD_DIR/bin/pycircuit-opt" .pycircuit_out/linked.ac \
+  --ac-simplify-linked-registrations --mlir-print-debuginfo \
+  -o .pycircuit_out/simplified.ac
+"$BUILD_DIR/bin/pycircuit-link-acir" --verify-only .pycircuit_out/simplified.ac
+```
+
+The output retains `ac.stage = "linked-source"`. Each simplified registration
+is a direct Module-body `ac.method.call` with its original `occurrence` and
+`ac.registration_name`. It uses the Module's `ac.domain_inputs` and exposes
+the Method's public results. The Method retains its guard and body, and calls
+inside it share the enclosing transaction. General `ac.transaction` operations
+remain valid. Applying the pass again gives the same result. Pass
+`--mlir-print-debuginfo` to `pycircuit-opt` to include MLIR locations in the
+printed artifact.
+
+Run `--ac-elide-linked-true-guards` after registration simplification to omit
+literal true conditions from the linked source artifact.
+
+```bash
+"$BUILD_DIR/bin/pycircuit-opt" .pycircuit_out/simplified.ac \
+  --ac-elide-linked-true-guards --mlir-print-debuginfo \
+  -o .pycircuit_out/elided.ac
+"$BUILD_DIR/bin/pycircuit-link-acir" --verify-only .pycircuit_out/elided.ac
+```
+
+In a linked-source package marked `ac.linked_implicit_guards`, an empty
+`ac.yield()` in a Method guard means true. A call marked `ac.implicit_path`
+also has a true path, and all its operands are Method arguments in their
+original order. The pass checks the guard and each call path independently.
+It matches Method guards consisting of one width-one literal true and its
+yield, and call paths that directly use a width-one literal true. It preserves
+the constant definitions and source locations. A later dead-code pass may
+remove the unused constants. Applying the elision pass again gives the same
+result.
+
+Rule admission, FIFO wiring and high-level GFSIM generation are downstream
+stages. FIFO admission still follows the resource contract. Use
+`pycircuit link` with the original source units to produce final hardware for
+the C++ and Verilog emitters.
 
 ## Scope and verification
 

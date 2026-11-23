@@ -936,6 +936,11 @@ SourceMethodSummariesAnalysis::SourceMethodSummariesAnalysis(
   }
   if (failed(mlir::verify(unit)))
     return;
+  if (unit->hasAttr("ac.linked_implicit_guards")) {
+    unit.emitOpError() << "source Method summaries require explicit guards "
+                          "and call paths";
+    return;
+  }
   SmallVector<Operation *> declarations;
   for (Operation &op : unit.getBody()->getOperations())
     if (isa<ModuleOp, ModuleImportOp>(op))

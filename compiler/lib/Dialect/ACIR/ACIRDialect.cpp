@@ -2,6 +2,7 @@
 #include "pycircuit/Dialect/ACIR/ACIRDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "EntryBoundary.h"
+#include "ACIRSourceContracts.h"
 #include "pycircuit/Dialect/ACIR/ACIROps.h"
 
 #include "pycircuit/Dialect/ACIR/ACIRDialect.cpp.inc"
@@ -124,6 +125,21 @@ LogicalResult ACIRDialect::verifyOperationAttribute(Operation *operation,
                 "in an executable package";
     return success();
   }
+  if (name == "ac.registration_name" && !isa<SourceMethodCallOp>(operation))
+    return operation->emitOpError()
+           << "ac.registration_name belongs only to a linked source Method call";
+  if (name == "ac.linked_implicit_guards" &&
+      (!detail::isLinkedSourcePackage(operation) ||
+       !isa<UnitAttr>(attribute.getValue())))
+    return operation->emitOpError()
+           << "ac.linked_implicit_guards requires a linked-source package and a unit marker";
+  if (name == "ac.implicit_path" &&
+      (!isa<SourceMethodCallOp>(operation) ||
+       !isa<UnitAttr>(attribute.getValue()) ||
+       !detail::allowsImplicitSourceConditions(operation)))
+    return operation->emitOpError()
+           << "ac.implicit_path requires a Method call and a unit marker in a "
+              "linked-source package marked ac.linked_implicit_guards";
   if (name == "ac.registration_entry") {
     auto package = operation->getParentOfType<mlir::ModuleOp>();
     auto stage = package ? package->getAttrOfType<StringAttr>("ac.stage")

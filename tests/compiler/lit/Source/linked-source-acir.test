@@ -1,1 +1,1 @@
-# RUN: %python %S/Inputs/linked-source-acir.py --repo %src --source-compiler %pycircuit_source_unit --source-linker %pycircuit_link_acir --linker %pycircuit_link --emitter %pycircuit_emit --scratch %t.dir
+# RUN: %python %S/Inputs/linked-source-acir.py --repo %src --optimizer %pycircuit_opt --source-compiler %pycircuit_source_unit --source-linker %pycircuit_link_acir --linker %pycircuit_link --emitter %pycircuit_emit --scratch %t.dir

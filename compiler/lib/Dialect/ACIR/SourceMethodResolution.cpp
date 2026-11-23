@@ -1030,6 +1030,22 @@ FailureOr<ResolvedSourceMethod> resolve(Operation *caller, SymbolRefAttr symbol,
           (**entry).call.getOperation() != site)
         return site->emitOpError() << "autonomous Rule body is private to its declaration registration";
     }
+    auto package = body->getParentOfType<mlir::ModuleOp>();
+    auto stage = package ? package->getAttrOfType<StringAttr>("ac.stage")
+                         : StringAttr();
+    if (stage && stage.getValue() == "linked-source") {
+      for (auto registration :
+           body.getBody().front().getOps<SourceMethodCallOp>()) {
+        if (++work > 1024 * 1024)
+          return site->emitOpError() << "autonomous Rule registration work budget exceeded";
+        if (context && failed(fees->workStorage(site, 1, 0)))
+          return failure();
+        if (registration.getOccurrence() == method.getDeclaration() &&
+            registration.getCalleeAttr() == symbol &&
+            registration.getOperation() != site)
+          return site->emitOpError() << "autonomous Rule body is private to its declaration registration";
+      }
+    }
   }
   auto receiver = DictionaryAttr::get(
       site->getContext(),

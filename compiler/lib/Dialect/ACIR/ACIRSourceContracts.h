@@ -39,6 +39,20 @@ mlir::LogicalResult shapeSchema(mlir::ArrayAttr shape,
 
 using EmitError = llvm::function_ref<mlir::InFlightDiagnostic()>;
 
+inline bool isLinkedSourcePackage(mlir::Operation *operation) {
+  if (!mlir::isa_and_nonnull<mlir::ModuleOp>(operation) ||
+      operation->hasAttr("ac.unit_kind"))
+    return false;
+  auto stage = operation->getAttrOfType<mlir::StringAttr>("ac.stage");
+  return stage && stage.getValue() == "linked-source";
+}
+
+inline bool allowsImplicitSourceConditions(mlir::Operation *operation) {
+  auto package = operation->getParentOfType<mlir::ModuleOp>();
+  return isLinkedSourcePackage(package) &&
+         package->hasAttrOfType<mlir::UnitAttr>("ac.linked_implicit_guards");
+}
+
 // Observation grammar shared by the native SourceObserveOp and ModuleOp
 // verifiers (ops layer, where these are defined) and the staged check-plan
 // tier, which re-runs the structure before resolving the observation owner.

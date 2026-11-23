@@ -388,6 +388,15 @@ struct SourceRegistrationEntryView {
 mlir::FailureOr<std::optional<SourceRegistrationEntryView>>
 getSourceRegistrationEntry(SourceTransactionOp transaction);
 
+/// Match a direct, known width-one ac.bits.constant literal of value one.
+bool isSourceLiteralTrue(mlir::Value value);
+
+/// Check the registration-specific contract after ordinary receiver and
+/// signature resolution. The enclosing Module supplies the sampling domain.
+mlir::LogicalResult
+verifyLinkedSourceRegistration(SourceMethodCallOp call,
+                               const SourceMethodView &method);
+
 struct SourceMethodSummary {
   bool mayBlock = true;
   llvm::SmallVector<mlir::SymbolRefAttr> callees;

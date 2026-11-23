@@ -79,7 +79,10 @@ LogicalResult region(Operation *operation, unsigned ordinal, TypeRange inputs,
   auto &block = region.front();
   auto &yield = block.back();
   if (guard) {
-    if (yield.getNumOperands() != 1)
+    bool implicit = yield.getNumOperands() == 0 &&
+                    isa<SourceMethodOp>(operation) &&
+                    detail::allowsImplicitSourceConditions(operation);
+    if (yield.getNumOperands() != 1 && !implicit)
       return yield.emitOpError() << "guard must yield exactly one predicate";
   } else if (!equivalentTypes(yield.getOperandTypes(), outputs)) {
     return yield.emitOpError() << "body yield types do not match results";
@@ -365,6 +368,18 @@ LogicalResult SourceMethodOp::verifyRegions() {
 }
 
 LogicalResult SourceMethodCallOp::verify() {
+  if (auto owner = dyn_cast_or_null<ModuleOp>((*this)->getParentOp())) {
+    if (!detail::isLinkedSourcePackage(owner->getParentOp()))
+      return emitOpError() << "direct Module calls require a linked-source package";
+    if (failed(namedDeclaration(
+            *this, (*this)->getAttrOfType<StringAttr>("ac.registration_name"))))
+      return failure();
+  } else {
+    if ((*this)->hasAttr("ac.registration_name"))
+      return emitOpError() << "ac.registration_name requires direct Module placement";
+    if (failed(transactionPlacement(*this, false, true)))
+      return failure();
+  }
   if ((*this)->hasAttr("receiver_kind") || (*this)->hasAttr("ancestor_depth")) {
     if ((*this)->hasAttr("ac.reference"))
       return emitOpError() << "relative Method receiver cannot also name a Module reference formal";
@@ -374,8 +389,6 @@ LogicalResult SourceMethodCallOp::verify() {
     if (failed(verifySourceRelativeReceiver(receiver.getDictionary(getContext()), *this)))
       return failure();
   }
-  if (failed(transactionPlacement(*this, false, true)))
-    return failure();
   if (Attribute raw = (*this)->getAttr("ac.reference")) {
     auto reference = dyn_cast<StringAttr>(raw);
     if (!reference || failed(detail::verifyPythonAstIdentifier(reference.getValue(), true,
@@ -415,10 +428,15 @@ LogicalResult SourceMethodCallOp::verify() {
 }
 
 LogicalResult SourceMethodCallOp::verifySymbolUses(SymbolTableCollection &) {
-  if ((*this)->getNumOperands() == 0 || (*this)->getNumRegions() != 0)
-    return emitOpError() << "method call requires path operand and no regions";
+  if ((*this)->getNumRegions() != 0)
+    return emitOpError() << "method call must have no regions";
   if (failed(verifyInvariantsImpl()))
     return failure();
+  if (!hasImplicitPath()) {
+    Value path = getPath();
+    if (!path || !isa<BitsType>(path.getType()))
+      return emitOpError() << "method call requires a Bits path operand";
+  }
   // The callee/receiver resolution, arity and bound-signature payload
   // agreement, and the formal-owner binding contract are the staged
   // transaction-surface entry.

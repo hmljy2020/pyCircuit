@@ -460,7 +460,9 @@ def ACIR_SourceMethodOp : ACIR_Op<"method", [Symbol, IsolatedFromAbove,
   let summary = "Define an instance operation with entry guard and ordered body";
   let description = [{
     Both regions take the explicit function inputs followed by captures.
-    The guard yields one four-state predicate. The body yields the ordinary
+    The guard yields one four-state predicate, or yields no value to denote
+    true in a linked-source package marked ac.linked_implicit_guards.
+    The body yields the ordinary
     function results. State access remains explicit and belongs to the calling
     transaction; this definition does not introduce a commit boundary.
     Required ac.parameters, ac.result_constraints and ac.return_form metadata
@@ -482,12 +484,27 @@ def ACIR_SourceMethodCallOp : ACIR_Op<"method.call", [
     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Invoke a Method on a statically identified instance path";
-  let arguments = (ins ACIR_BitsType:$path,
-      Variadic<ACIR_HardwareType>:$arguments, SymbolRefAttr:$callee,
+  let description = [{
+    The first operand is the path predicate, followed by the Method arguments.
+    In a linked-source package marked ac.linked_implicit_guards, the unit
+    attribute ac.implicit_path denotes a true path with no path operand.
+  }];
+  let arguments = (ins Variadic<ACIR_HardwareType>:$path_and_arguments,
+      SymbolRefAttr:$callee,
       StrArrayAttr:$instance_path, DictionaryAttr:$occurrence);
   let results = (outs Variadic<ACIR_HardwareType>:$results);
   let hasVerifier = 1;
   let extraClassDeclaration = [{
+    bool hasImplicitPath() { return (*this)->hasAttr("ac.implicit_path"); }
+    ::mlir::Value getPath() {
+      auto operands = getPathAndArguments();
+      return hasImplicitPath() || operands.empty() ? ::mlir::Value()
+                                                   : operands.front();
+    }
+    ::mlir::OperandRange getArguments() {
+      auto operands = getPathAndArguments();
+      return getPath() ? operands.drop_front() : operands;
+    }
     ::mlir::ArrayAttr getFormalOwnerBindings() {
       return (*this)->getAttrOfType<::mlir::ArrayAttr>(
           "ac.formal_owner_bindings");
