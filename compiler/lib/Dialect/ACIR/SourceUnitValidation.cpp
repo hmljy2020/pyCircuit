@@ -129,10 +129,9 @@ LogicalResult verifyDeclaration(Operation *operation, DictionaryAttr owner,
   return success();
 }
 
-FailureOr<SourceUnitStructure> verifyStructure(mlir::ModuleOp unit, bool body,
-                                               detail::EmitError emitError) {
-  if (!unit)
-    return emitError() << "source unit is required";
+} // namespace
+
+LogicalResult verifySourceOperations(mlir::ModuleOp unit) {
   auto forged = unit.walk([&](Operation *operation) {
     if (auto name = SymbolTable::getSymbolName(operation);
         name && name.getValue() == "pycircuit.__link_entry__") {
@@ -241,7 +240,15 @@ FailureOr<SourceUnitStructure> verifyStructure(mlir::ModuleOp unit, bool body,
       return WalkResult::interrupt();
     return WalkResult::advance();
   });
-  if (semanticWalk.wasInterrupted())
+  return success(!semanticWalk.wasInterrupted());
+}
+
+namespace {
+FailureOr<SourceUnitStructure> verifyStructure(mlir::ModuleOp unit, bool body,
+                                               detail::EmitError emitError) {
+  if (!unit)
+    return emitError() << "source unit is required";
+  if (failed(verifySourceOperations(unit)))
     return failure();
   auto kind = unit->getAttrOfType<StringAttr>("ac.unit_kind");
   if (body && (!kind || (kind.getValue() != "implementation" &&

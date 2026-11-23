@@ -607,6 +607,34 @@ FailureOr<Type> detail::resolveSourceBranchResultType(
 
 namespace acir::ac {
 
+LogicalResult verifySourceMethodCallSignature(
+    SourceMethodCallOp call, const HardwareBindings &caller,
+    const ResolvedSourceMethod &resolved, const HardwareAnalysis &hardware) {
+  auto signature = resolved.method.getFunctionType();
+  if (call.getArguments().size() != signature.getNumInputs() ||
+      call.getResults().size() != signature.getNumResults())
+    return call.emitOpError() << "method call arity must match signature";
+  auto check = [&](Type actual, Type formal) -> LogicalResult {
+    auto expected = hardware.resolveType(formal, resolved.bindings, call);
+    auto supplied = hardware.resolveType(actual, caller, call);
+    if (failed(expected) || failed(supplied))
+      return failure();
+    if (!areEquivalentHardwareTypes(*expected, *supplied))
+      return call.emitOpError() << "method call payload type must match bound "
+                                  "receiver signature";
+    return success();
+  };
+  for (auto [actual, formal] :
+       llvm::zip(call.getArguments().getTypes(), signature.getInputs()))
+    if (failed(check(actual, formal)))
+      return failure();
+  for (auto [actual, formal] :
+       llvm::zip(call.getResultTypes(), signature.getResults()))
+    if (failed(check(actual, formal)))
+      return failure();
+  return success();
+}
+
 LogicalResult HardwareAnalysis::verifyTransactionSurfaceOperation(
     Operation *operation, const HardwareBindings &bindings,
     bool requireResolved) const {
@@ -739,29 +767,8 @@ LogicalResult HardwareAnalysis::verifyTransactionSurfaceOperation(
         });
     if (failed(resolved))
       return failure();
-    auto calleeBindings = resolved->bindings;
-    auto signature = resolved->method.getFunctionType();
-    if (call.getArguments().size() != signature.getNumInputs() ||
-        call.getResults().size() != signature.getNumResults())
-      return call.emitOpError() << "method call arity must match signature";
-    auto check = [&](Type actual, Type formal) -> LogicalResult {
-      auto expected = resolveType(formal, calleeBindings, call);
-      auto supplied = resolveType(actual, scope, call);
-      if (failed(expected) || failed(supplied))
-        return failure();
-      if (!areEquivalentHardwareTypes(*expected, *supplied))
-        return call.emitOpError() << "method call payload type must match bound "
-                                    "receiver signature";
-      return success();
-    };
-    for (auto [actual, formal] :
-         llvm::zip(call.getArguments().getTypes(), signature.getInputs()))
-      if (failed(check(actual, formal)))
-        return failure();
-    for (auto [actual, formal] :
-         llvm::zip(call.getResultTypes(), signature.getResults()))
-      if (failed(check(actual, formal)))
-        return failure();
+    if (failed(verifySourceMethodCallSignature(call, scope, *resolved, *this)))
+      return failure();
     auto caller = call->getParentOfType<SourceMethodOp>();
     auto lexical = call->getParentOfType<ModuleOp>();
     return verifySourceFormalOwnerBindings(

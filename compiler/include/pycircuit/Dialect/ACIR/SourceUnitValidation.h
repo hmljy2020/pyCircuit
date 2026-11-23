@@ -9,6 +9,9 @@
 
 namespace acir::ac {
 
+/// Verify source-tier operations with symbolic bindings in their lexical scope.
+mlir::LogicalResult verifySourceOperations(mlir::ModuleOp package);
+
 /// Structural facts only; pointers borrow the unit and mutation invalidates
 /// them. Provider-header authority and canonical builtin admission remain with
 /// callers.

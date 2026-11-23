@@ -520,6 +520,10 @@ mlir::FailureOr<bool> memoryReadCoveredBy(
     llvm::function_ref<mlir::LogicalResult(uint64_t)> pay);
 } // namespace detail
 
+/// Check Method bindings in the selected source hierarchy without building
+/// transaction or effect plans. The package must pass lexical source verification.
+mlir::LogicalResult verifyLinkedSourceMethodBindings(mlir::ModuleOp package);
+
 /// Read-only analysis of every actual transaction occurrence in a builtin ModuleOp
 /// package owning its closure. Native verification and Method summaries remain
 /// authoritative. Whole-Bits effects retain source paths, ordered admission

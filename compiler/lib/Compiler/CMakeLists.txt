@@ -2,6 +2,7 @@ add_acir_library(ACIRSourceCompiler SOURCES
   AnchorArtifact.cpp
   ExecutionProjection.cpp
   FixedUnsignedDivRemLowering.cpp
+  LinkedSourceACIR.cpp
   NumericLowering.cpp
   PythonImportAST.cpp
   PythonImportCaseSyntax.cpp

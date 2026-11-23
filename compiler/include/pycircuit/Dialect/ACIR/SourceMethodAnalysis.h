@@ -349,6 +349,10 @@ mlir::FailureOr<ResolvedSourceMethod> resolveSourceRelativeMethodContract(
     mlir::Operation *diagnosticSite,
     SourceReceiverProofContext *context = nullptr,
     const SourceReceiverProofFees *fees = nullptr);
+mlir::LogicalResult verifySourceMethodCallSignature(
+    SourceMethodCallOp call, const HardwareBindings &caller,
+    const ResolvedSourceMethod &resolved, const HardwareAnalysis &hardware);
+
 mlir::LogicalResult verifySourceRelativeMethodBinding(
     const ResolvedSourceMethod &expected, const SourceMethodView &actual,
     const HardwareBindings &actualBindings, mlir::Operation *diagnosticSite,

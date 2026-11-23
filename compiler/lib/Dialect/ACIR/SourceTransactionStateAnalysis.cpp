@@ -623,6 +623,42 @@ public:
     return success(!result.wasInterrupted());
   }
 
+  LogicalResult verifyLinkedOccurrences(const HardwareBindings &bindings) {
+    auto root = cast<ModuleOp>(bindings.owner);
+    auto path = ArrayAttr::get(package.getContext(), {});
+    plan.instances.push_back({root, std::nullopt, {}, path, bindings, bindings});
+    if (failed(verifyLinkedOccurrence(0, 0)))
+      return failure();
+
+    // An unused definition still has a lexical body. A relative selector
+    // rooted in that body must resolve even without a bound parent occurrence.
+    for (auto module : package.getOps<ModuleOp>()) {
+      if (linkedOccurrences.contains(module))
+        continue;
+      std::optional<LexicalInstanceId> anchor;
+      auto result = module.walk([&](SourceMethodCallOp call) {
+        auto levels = call->getAttrOfType<IntegerAttr>("ancestor_depth");
+        if (!levels || levels.getInt() != 0)
+          return WalkResult::advance();
+        if (!anchor) {
+          if (!budget.chargeStorage<TransactionLexicalInstance>(module, 1) ||
+              !budget.reserve(module, plan.instances, 1))
+            return WalkResult::interrupt();
+          HardwareBindings symbolic;
+          symbolic.owner = module;
+          anchor = plan.instances.size();
+          plan.instances.push_back(
+              {module, std::nullopt, {}, path, symbolic, symbolic});
+        }
+        return failed(verifyLinkedCall(call, *anchor)) ? WalkResult::interrupt()
+                                                       : WalkResult::advance();
+      });
+      if (result.wasInterrupted())
+        return failure();
+    }
+    return success();
+  }
+
   FailureOr<TransactionStatePlan> run(SourceTransactionOp transaction,
       ModuleOp routingModule = {}, ArrayRef<InstanceOp> registrationPath = {}) {
     plan.transaction = transaction;
@@ -1665,16 +1701,95 @@ private:
     return descend(anchor, receiver.getAs<ArrayAttr>("instance_path"), site);
   }
 
-  FailureOr<LexicalInstanceId> receiver(InvocationFrameId frame,
+  FailureOr<LexicalInstanceId> receiver(LexicalInstanceId callerAnchor,
                                         const ResolvedSourceMethod &resolved,
                                         SourceMethodCallOp call) {
-    auto target = actualReceiver(plan.frames[frame].anchor, resolved.receiver, call);
+    auto target = actualReceiver(callerAnchor, resolved.receiver, call);
     if (failed(target)) return failure();
     auto anchor = *target;
     if (plan.instances[anchor].definition != resolved.method.module)
       return call.emitOpError()
              << "transaction receiver body identity mismatch";
     return anchor;
+  }
+
+  LogicalResult verifyLinkedCall(SourceMethodCallOp call,
+                                 LexicalInstanceId anchor) {
+    if (!budget.charge(call))
+      return failure();
+    auto resolved = resolveCall(call, anchor);
+    if (failed(resolved))
+      return failure();
+    if (call->hasAttr("ac.reference")) {
+      auto target = receiver(anchor, *resolved, call);
+      if (failed(target))
+        return failure();
+      resolved->bindings = plan.instances[*target].bindings;
+    }
+    return verifySourceMethodCallSignature(call, plan.instances[anchor].bindings,
+                                           *resolved, hardware);
+  }
+
+  LogicalResult verifyLinkedOccurrence(LexicalInstanceId anchor,
+                                       unsigned depth) {
+    auto module = plan.instances[anchor].definition;
+    if (depth > maxDepth)
+      return module.emitOpError() << "linked source instance depth exceeded";
+    if (!budget.charge(module))
+      return failure();
+    if (!linkedOccurrences.contains(module)) {
+      if (!budget.reserveMapInsert(module, linkedOccurrences))
+        return failure();
+      linkedOccurrences.insert(module);
+    }
+    auto result = module.walk([&](SourceMethodCallOp call) {
+      return failed(verifyLinkedCall(call, anchor)) ? WalkResult::interrupt()
+                                                    : WalkResult::advance();
+    });
+    if (result.wasInterrupted())
+      return failure();
+
+    auto bindings = plan.instances[anchor].bindings;
+    for (Operation &operation : module.getBody().front()) {
+      if (!budget.charge(&operation))
+        return failure();
+      if (auto instance = dyn_cast<InstanceOp>(operation)) {
+        if (failed(hardware.verifyInstance(instance, bindings)))
+          return failure();
+        if (!isa<ModuleOp>(hardware.resolveCallee(instance)))
+          continue;
+        auto child = descend(anchor, ArrayAttr::get(package.getContext(),
+                                                   {instance.getOccurrence()}),
+                             instance);
+        if (failed(child))
+          return failure();
+        if (plan.instances[*child].allocation != instance)
+          return instance.emitOpError() << "ambiguous linked source instance occurrence";
+        if (failed(verifyLinkedOccurrence(*child, depth + 1)))
+          return failure();
+      } else if (auto collection = dyn_cast<CollectionOp>(operation)) {
+        if (failed(hardware.verifyCollectionOperation(collection, bindings, true)))
+          return failure();
+        auto child = dyn_cast<ModuleOp>(hardware.resolveCallee(collection));
+        if (!child)
+          continue;
+        if (child->hasAttr("ac.reference_parameters"))
+          return collection.emitOpError() << "collection cannot bind Module references";
+        auto bound = hardware.bindInstance(collection, bindings);
+        if (failed(bound) || !budget.chargeBindings(collection, *bound) ||
+            !budget.chargeStorage<TransactionLexicalInstance>(collection, 1) ||
+            !budget.reserve(collection, plan.instances, 1))
+          return failure();
+        // All elements use the same definition and static bindings. A
+        // Collection is never a named Instance receiver or a reference actual.
+        LexicalInstanceId childAnchor = plan.instances.size();
+        plan.instances.push_back({child, anchor, {},
+            ArrayAttr::get(package.getContext(), {}), *bound, *bound});
+        if (failed(verifyLinkedOccurrence(childAnchor, depth + 1)))
+          return failure();
+      }
+    }
+    return success();
   }
 
   LogicalResult snapshot(Operation *site,
@@ -1797,7 +1912,7 @@ private:
     if (!method)
       return operation.emitOpError()
              << "transaction Method call requires an executable provider body";
-    auto anchor = receiver(parent, *resolved, operation);
+    auto anchor = receiver(callerAnchor, *resolved, operation);
     if (failed(anchor))
       return failure();
     auto domain = receiverDomain(*anchor, operation);
@@ -2867,6 +2982,7 @@ private:
       memoryPortClaims;
   llvm::DenseMap<OwnerKey, LexicalInstanceId> instances;
   llvm::DenseMap<OwnerKey, ResolvedSourceMethod> resolutions;
+  llvm::DenseSet<Operation *> linkedOccurrences;
   SmallVector<SmallVector<BoundValueId, 0>, 0> formalValues;
   SmallVector<SmallVector<uint64_t, 0>, 0> formalIntents;
   std::unique_ptr<detail::SourceFormalProposalProof> formalProof;
@@ -3356,6 +3472,24 @@ void printPlan(llvm::raw_ostream &out, const TransactionStatePlan &plan) {
 }
 
 } // namespace
+
+LogicalResult verifyLinkedSourceMethodBindings(mlir::ModuleOp package) {
+  StateAnalysisBudget budget;
+  PackageInventory inventory;
+  if (failed(preflight(package, budget, inventory)) ||
+      failed(priceResolver(package, budget, inventory)))
+    return failure();
+  HardwareAnalysis hardware(package);
+  auto bindings = detail::resolveHardwareRootBindings(hardware);
+  if (failed(bindings))
+    return failure();
+  budget.setPhase("linked source Method bindings");
+  SourceReceiverProofContext receiverProof;
+  ClosedLayoutProofs closedTypes;
+  TransactionPlanBuilder builder(package, budget, inventory, receiverProof,
+                                 closedTypes);
+  return builder.verifyLinkedOccurrences(*bindings);
+}
 
 #include "SourceTransactionMemoryProof.inc"
 

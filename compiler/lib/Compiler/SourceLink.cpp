@@ -2,7 +2,7 @@
 #include "ExecutionProjection.h"
 #include "SourceEntryBoundary.h"
 #include "LiteralPayloadWires.h"
-#include "SourceHeaderHelpers.h"
+#include "LinkedSourceACIR.h"
 #include "Dialect/ACIR/SourceCheckBudget.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -331,74 +331,15 @@ FailureOr<OwningOpRef<ModuleOp>> linkSourceUnits(
   auto admitted = admitSourceLinkUnits(units, emitError);
   if (failed(admitted))
     return failure();
-  SmallVector<SourceLinkUnit> orderedUnits(units);
-  llvm::sort(orderedUnits, [](const SourceLinkUnit &left,
-                             const SourceLinkUnit &right) {
-    return ac::detail::compareClosedSourceStructure(
-               left.header->getAttr("ac.source_owner"),
-               right.header->getAttr("ac.source_owner")) < 0;
-  });
-  units = orderedUnits;
-  MLIRContext *context = units.front().body->getContext();
-  OwningOpRef<ModuleOp> linked(ModuleOp::create(UnknownLoc::get(context)));
+  auto merged = mergeSourceLinkDefinitions(units);
+  if (failed(merged))
+    return failure();
+  auto linked = std::move(*merged);
+  MLIRContext *context = linked->getContext();
   Builder builder(context);
-  SmallVector<Attribute> owners;
-  for (SourceLinkUnit unit : units)
-    owners.push_back(unit.header->getAttr("ac.source_owner"));
-  llvm::sort(owners, [](Attribute left, Attribute right) {
-    return ac::detail::compareClosedSourceStructure(left, right) < 0;
-  });
-  (*linked)->setAttr("ac.source_units", builder.getArrayAttr(owners));
-  llvm::StringMap<Operation *> symbols;
-  for (SourceLinkUnit unit : units) {
-    for (Operation &operation : unit.body.getBody()->getOperations()) {
-      auto name = SymbolTable::getSymbolName(&operation);
-      if (!name)
-        return operation.emitOpError(
-            "source-unit top-level operation must be a declaration");
-      auto prior = symbols.find(name.getValue());
-      if (prior != symbols.end()) {
-        bool oldDefinition = isa<ac::ModuleOp>(prior->second);
-        bool newDefinition = isa<ac::ModuleOp>(operation);
-        if (oldDefinition && isa<ac::ModuleImportOp>(operation))
-          continue;
-        if (newDefinition && isa<ac::ModuleImportOp>(prior->second)) {
-          prior->second->erase();
-          symbols.erase(prior);
-        } else if (detail::sameDeclaration(prior->second, &operation) &&
-                   !newDefinition) {
-          auto role =
-              operation.getAttrOfType<StringAttr>("ac.declaration_role");
-          auto priorRole =
-              prior->second->getAttrOfType<StringAttr>("ac.declaration_role");
-          // Every pair already passed owning-body authority. Prefer that real
-          // nominal definition over an equivalent consumer snapshot, preserving
-          // provider metadata and location independently of link input order.
-          if (isa<ac::StructOp, ac::EnumOp, ac::ConstantOp>(operation) &&
-              role.getValue() == "definition" &&
-              priorRole.getValue() == "import_snapshot") {
-            prior->second->erase();
-            symbols.erase(prior);
-          } else {
-            continue;
-          }
-        } else {
-          return operation.emitOpError("conflicting linked declaration: ")
-                 << name;
-        }
-      }
-      Operation *copy = operation.clone();
-      (*linked).getBody()->push_back(copy);
-      symbols[name.getValue()] = copy;
-    }
-  }
-  auto selected = symbols.find(top);
-  auto root = selected == symbols.end()
-                  ? ac::ModuleOp()
-                  : dyn_cast<ac::ModuleOp>(selected->second);
+  auto root = findSourceLinkEntry(*linked, top, emitError);
   if (!root)
-    return emitError() << "link top is not a supplied module definition: @"
-                       << top;
+    return failure();
   if (target == SourceLinkTarget::Routed && llvm::any_of(linked->getOps<ac::ModuleOp>(),
         [](ac::ModuleOp module) { return module->hasAttr("ac.execution_model"); }))
     return root.emitOpError("execution-model selection currently requires final linking");
@@ -462,18 +403,7 @@ FailureOr<OwningOpRef<ModuleOp>> linkSourceUnits(
                                   "a value or default: " << name;
     arguments.push_back(value);
   }
-  OperationState state(root.getLoc(), ac::SystemOp::getOperationName());
-  state.addAttribute(
-      "entry",
-      builder.getDictionaryAttr(
-          {builder.getNamedAttr("callee", FlatSymbolRefAttr::get(context, root.getSymName())),
-           builder.getNamedAttr("parameters", builder.getArrayAttr(arguments)),
-           builder.getNamedAttr("type_arguments", builder.getArrayAttr({}))}));
-  state.addAttribute("domain", builder.getStringAttr("default"));
-  state.addAttribute("ac.execution_policy",
-                     builder.getDictionaryAttr({builder.getNamedAttr(
-                         "reset", builder.getStringAttr(resetSemantics))}));
-  (*linked).getBody()->push_back(Operation::create(state));
+  addSourceLinkEntry(*linked, root, arguments, resetSemantics);
   auto residualCall = linked->walk([&](func::CallOp call) {
     if (call->getParentOfType<func::FuncOp>())
       return WalkResult::advance();

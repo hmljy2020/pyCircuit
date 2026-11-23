@@ -544,6 +544,37 @@ component. Host drivers use the typed `pyc_dut` and shared SystemRunner, supply
 inputs and explicit clock/reset levels, and set a finite run limit. Work reads
 old state; successful whole-system checking precedes Xfer commit.
 
+## Standalone linked source ACIR
+
+The native `pycircuit-link-acir` command is available in the compiler build's
+`bin/` directory. Pass the body and owning interface of each independently
+compiled unit and select the top by its qualified Module name. For the units
+compiled above:
+
+```bash
+BUILD_DIR=/path/to/compiler/build
+"$BUILD_DIR/bin/pycircuit-link-acir" \
+  --body .pycircuit_out/units/child/child.ac \
+  --header .pycircuit_out/units/child/child.interface.ac \
+  --body .pycircuit_out/units/top/top.ac \
+  --header .pycircuit_out/units/top/top.interface.ac \
+  --top demo.top.Top --output .pycircuit_out/linked.ac
+
+"$BUILD_DIR/bin/pycircuit-link-acir" --verify-only .pycircuit_out/linked.ac
+```
+
+The linker requires the complete explicit provider closure and creates the
+output only at a fresh path. The result is marked `ac.stage = "linked-source"`
+and records the top in `ac.system`. The top uses its declared Integer defaults
+and the default strict reset policy. Shared definitions retain symbolic
+parameters and relative receivers. Method definitions and calls, including
+FIFO calls and calls in unused definitions, retain their source locations.
+
+The verifier reads the artifact on its own and checks the selected top,
+symbol closure, canonical builtin declarations and Method bindings. Rule
+admission, FIFO wiring and high-level GFSIM generation are downstream stages.
+Use `pycircuit link` to produce final hardware for the C++ and Verilog emitters.
+
 ## Scope and verification
 
 The [language reference](../reference/language.md) defines current admission and

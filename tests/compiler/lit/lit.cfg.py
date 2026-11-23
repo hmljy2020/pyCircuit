@@ -20,6 +20,7 @@ for name, path in (
     ("%pycircuit_opt", config.pycircuit_opt),
     ("%pycircuit_emit", config.pycircuit_emit),
     ("%pycircuit_source_unit", config.pycircuit_source_unit),
+    ("%pycircuit_link_acir", config.pycircuit_link_acir),
     ("%pycircuit_link", config.pycircuit_link),
     ("%FileCheck", config.filecheck),
     ("%cxx", config.cxx),
