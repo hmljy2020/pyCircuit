@@ -527,6 +527,10 @@ struct LinkedSourceBindingVisitor {
   llvm::function_ref<mlir::LogicalResult(SourceMethodCallOp, LexicalInstanceId,
                                         LexicalInstanceId, const SourceMethodView &)>
       call;
+  // When present, visit every Collection element and report its allocation
+  // just before visiting the bound Module.
+  llvm::function_ref<void(CollectionOp, LexicalInstanceId, uint64_t)>
+      collectionElement = {};
 };
 
 /// Check Method bindings in the selected source hierarchy without building

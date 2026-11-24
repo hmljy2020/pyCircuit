@@ -15,6 +15,70 @@ def Stage(value: ac.u8, update: ac.u1) -> tuple[ac.u8, ac.u8]:
     return saved, saved ^ 255
 
 
+@ac.struct
+class SavedWords:
+    words: ac.table[2, ac.u8]
+    tag: ac.u8
+
+
+@ac.module
+def SwapState(
+    word: ac.u8, divisor: ac.u8, healthy: ac.u1
+) -> tuple[SavedWords, ac.table[2, ac.u8], ac.u8]:
+    left: SavedWords = SavedWords(words=(9, 12), tag=3)
+    right: ac.table[2, ac.u8] = (23, 31)
+    next_left = SavedWords(words=(right[0] // divisor, right[1]), tag=3)
+    next_right = left.words
+    preview = word ^ right[0]
+
+    @ac.rule
+    def update_left() -> None:
+        left = next_left
+
+    @ac.rule
+    def update_right() -> None:
+        right = next_right
+
+    @ac.rule
+    def check() -> None:
+        assert healthy == 1, "swap rejected"
+
+    return left, right, preview
+
+
+@ac.struct
+class WordPair:
+    first: ac.u32
+    second: ac.u32
+
+
+def mix_word(word: ac.u32) -> ac.u32:
+    left = word
+    right = ~word
+    for _step in range(24):
+        left = (left << 1) ^ (left >> 3) ^ 17
+        right = (right << 2) ^ (right >> 1) ^ 41
+    return left ^ right
+
+
+@ac.module
+def CachedWork(
+    next_word: ac.u32, next_other: ac.u32, noise: ac.u32
+) -> tuple[WordPair, WordPair, ac.u8]:
+    current: WordPair = WordPair(first=3, second=5)
+    preview = WordPair(
+        first=mix_word(current.first), second=mix_word(current.second) ^ noise
+    )
+    following = WordPair(first=next_word, second=next_other)
+
+    @ac.rule
+    def advance() -> WordPair:
+        current = following
+        return preview
+
+    return advance, current, 51
+
+
 @ac.module
 def Increment(value: ac.u8) -> ac.u8:
     return value + 1
@@ -182,3 +246,114 @@ def Interleaved(value: ac.u8) -> ac.u8:
 @ac.module
 def UnknownValue() -> ac.u8:
     return ac.four_state("10xz0011")
+
+
+@ac.struct
+class TableRow:
+    left: ac.u8
+    right: ac.u8
+
+
+@ac.module
+def TableState(
+    index: ac.u1, value: ac.u8, other: ac.u8, healthy: ac.u1
+) -> tuple[ac.table[3, TableRow], ac.u8, ac.u8]:
+    rows: ac.table[3, TableRow] = (
+        TableRow(left=1, right=2),
+        TableRow(left=3, right=4),
+        TableRow(left=5, right=6),
+    )
+
+    @ac.rule
+    def write_left() -> ac.u8:
+        rows[index].left = value
+        return rows[index].left
+
+    @ac.rule
+    def write_right() -> None:
+        rows[index].right = other
+
+    @ac.rule
+    def replace_last() -> None:
+        rows[2] = TableRow(left=other, right=value)
+
+    @ac.rule
+    def snapshot() -> ac.u8:
+        return rows[index].left
+
+    @ac.rule
+    def check() -> None:
+        assert healthy == 1, "table update failed"
+
+    return rows, write_left, snapshot
+
+
+@ac.struct
+class TablePacket:
+    rows: ac.table[3, TableRow]
+    marker: ac.u8
+
+
+@ac.module
+def MakeTablePacket(value: ac.u8) -> TablePacket:
+    return TablePacket(
+        rows=(
+            TableRow(left=value, right=2),
+            TableRow(left=3, right=4),
+            TableRow(left=5, right=value + 1),
+        ),
+        marker=value + 2,
+    )
+
+
+@ac.module
+def BufferTablePacket() -> ac.u8:
+    pending = ac.queue[TablePacket](depth=1, latency=2)
+
+    @ac.method
+    def put(packet: TablePacket) -> None:
+        pending.push(packet)
+
+    @ac.method
+    def get() -> TablePacket:
+        return pending.pop()
+
+    return 0
+
+
+@ac.module
+def TableQueue(value: ac.u8, issue: ac.u1, take: ac.u1) -> TablePacket:
+    packet = MakeTablePacket(value)
+    buffer = BufferTablePacket()
+
+    @ac.rule(guard=lambda: issue)
+    def enqueue() -> None:
+        buffer.put(packet)
+
+    @ac.rule(guard=lambda: take)
+    def dequeue() -> TablePacket:
+        return buffer.get()
+
+    return dequeue
+
+
+@ac.module
+def Accumulator() -> ac.u8:
+    saved: ac.u8 = 3
+
+    @ac.method
+    def add(amount: ac.u8) -> None:
+        saved = saved + amount
+
+    return saved
+
+
+@ac.module
+def FeedbackCell(row: TableRow, enable: ac.u1) -> TableRow:
+    accumulator = Accumulator()
+
+    @ac.rule(guard=lambda: enable)
+    def accumulate() -> None:
+        accumulator.add(row.left)
+
+    return TableRow(left=accumulator, right=row.right + 1)

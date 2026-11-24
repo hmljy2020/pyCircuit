@@ -269,11 +269,23 @@ namespace acir::ac {
 LogicalResult HardwareAnalysis::verifySourceIndex(
     Value index, TableType table, const HardwareBindings &bindings,
     Operation *site) const {
+  auto extent = getTableSize(table, bindings, site);
+  if (failed(extent) || table.getShape().size() != 1 ||
+      !isa<BitsType>(index.getType()))
+    return failure();
+  auto maximum = getSourceIndexMaximum(index, bindings, site);
+  if (failed(maximum))
+    return failure();
+  if (maximum->getActiveBits() <= 64 && maximum->getZExtValue() < *extent)
+    return success();
+  return site->emitOpError() << "checked Table index complete unsigned range "
+                                "is not proven within bound extent";
+}
+
+FailureOr<llvm::APInt> HardwareAnalysis::getSourceIndexMaximum(
+    Value index, const HardwareBindings &bindings, Operation *site) const {
   using Range = llvm::ConstantRange;
   using Pred = llvm::CmpInst::Predicate;
-  auto extent = getTableSize(table, bindings, site);
-  if (failed(extent) || table.getShape().size() != 1 || !isa<BitsType>(index.getType()))
-    return failure();
   detail::SourceCheckBudget budget(HardwareSourceCheckLimits{});
   budget.setPhase("checked Table index ranges");
   SmallVector<std::unique_ptr<HardwareBindings>, 4> contexts;
@@ -513,6 +525,18 @@ LogicalResult HardwareAnalysis::verifySourceIndex(
         if (failed(range)) return failure();
         return range->zextOrTrunc(width);
       }
+      if (auto argument = dyn_cast<BlockArgument>(node.value);
+          argument && argument.getArgNumber() == 0) {
+        if (auto map = dyn_cast<TableMapOp>(argument.getOwner()->getParentOp());
+            map && isStaticEvaluable(map.getShape(), actual)) {
+          auto shape = resolveShape(map.getShape(), actual, site);
+          if (failed(shape))
+            return failure();
+          uint64_t count = detail::shapeProduct(*shape);
+          if (llvm::APInt(64, count).getActiveBits() <= width)
+            return Range(llvm::APInt(width, 0), llvm::APInt(width, count));
+        }
+      }
       auto *operation = node.value.getDefiningOp();
       if (auto constant = dyn_cast_or_null<BitsConstantOp>(operation)) {
         if (failed(constant.verifyInvariantsImpl()) || failed(constant.verify()) || failed(validate(constant, node.context))) return failure();
@@ -575,8 +599,13 @@ LogicalResult HardwareAnalysis::verifySourceIndex(
             .Default(std::nullopt);
         if (opcode) return lhs->binaryOp(*opcode, *rhs);
       }
-      if (auto constant = dyn_cast_or_null<BitsConstant4Op>(operation))
-        if (failed(constant.verifyInvariantsImpl()) || failed(constant.verify()) || failed(validate(constant, node.context))) return failure();
+      if (auto constant = dyn_cast_or_null<BitsConstant4Op>(operation)) {
+        if (failed(constant.verifyInvariantsImpl()) || failed(constant.verify()) ||
+            failed(validate(constant, node.context)))
+          return failure();
+        if (constant.getPattern().find_first_of("xz") == StringRef::npos)
+          return Range(llvm::APInt(width, constant.getPattern(), 2));
+      }
       return Range::getFull(width);
     };
     auto result = compute();
@@ -589,9 +618,7 @@ LogicalResult HardwareAnalysis::verifySourceIndex(
   auto result = infer(Node{index, *root}, 0);
   if (failed(result)) return failure();
   if (result->isEmptySet()) return site->emitOpError() << "checked Table index has no admitted unsigned value";
-  auto maximum = result->getUnsignedMax();
-  if (maximum.getActiveBits() <= 64 && maximum.getZExtValue() < *extent) return success();
-  return site->emitOpError() << "checked Table index complete unsigned range is not proven within bound extent";
+  return result->getUnsignedMax();
 }
 
 LogicalResult HardwareAnalysis::verifyResolvedOperation(

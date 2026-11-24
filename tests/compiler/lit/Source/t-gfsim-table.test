@@ -1,0 +1,19 @@
+# RUN: rm -rf %t.dir
+# RUN: mkdir -p %t.dir
+# RUN: %pycircuit_opt %S/Inputs/t-gfsim/table-values.mlir --ac-infer-linked-method-guards --mlir-print-debuginfo -o %t.dir/values.ac
+# RUN: %pycircuit_link_acir --verify-only %t.dir/values.ac
+# RUN: %pycircuit_emit_t_gfsim %t.dir/values.ac --output %t.dir/model.h
+# RUN: %cxx -std=c++20 -I%include -I%t.dir %S/Inputs/t-gfsim/table-values.cpp -o %t.dir/simulate
+# RUN: %t.dir/simulate
+
+# Forward a field projected from the raw payload to a module output. The linked ACIR still verifies,
+# while two-state emission rejects the unprotected consumer.
+# RUN: sed 's/\(checked, [%]\)protected_word/\1picked_word/' %S/Inputs/t-gfsim/table-values.mlir > %t.dir/unprotected.mlir
+# RUN: %pycircuit_opt %t.dir/unprotected.mlir --ac-infer-linked-method-guards --mlir-print-debuginfo -o %t.dir/unprotected.ac
+# RUN: %pycircuit_link_acir --verify-only %t.dir/unprotected.ac
+# RUN: cp %t.dir/model.h %t.dir/original.h
+# RUN: not %pycircuit_emit_t_gfsim %t.dir/unprotected.ac --output %t.dir/model.h 2>&1 | FileCheck %s
+# RUN: diff %t.dir/original.h %t.dir/model.h
+
+# CHECK: loc("table_values.py":10:1): error: {{.*}}ac.table.get
+# CHECK-SAME: Unprotected consumer ac.yield at loc("table_values.py":12:1)

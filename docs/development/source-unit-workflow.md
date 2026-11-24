@@ -683,19 +683,35 @@ A System with explicit two-state sample rows also has `Run()` to replay them.
 
 Construction binds every endpoint to its typed value. Forwarding and fanout
 share the producing slot. Each `Step()` runs a static Work schedule derived
-from same-sample reads. When whole instances can be ordered, each instance
-runs one `Work()`. When a parent produces a child's input and then consumes
-its output in the same sample, the emitter follows the operation dependency
-order. Consecutive operations from the same instance form a Work segment and
-values between segments use the same shared slots. An instance with several
-segments emits `Work_0()`, `Work_1()`, and so on. A registered Rule's guard
-and body execute together on the selected Method receiver. Nested calls share
-the enclosing Rule's transaction. Each independent Rule reads the committed
-State and Queue snapshot. A later read inside the same transaction can see its
-own State writes.
+from same-sample reads. When whole instances cannot be ordered, the emitter
+follows operation dependencies across instance boundaries. It emits bounded
+Work schedules in `Step()` and uses local temporaries for values whose lifetime
+ends in the sample. Local aggregate projections can reference committed
+storage directly while that storage is stable. Larger schedules and those made
+only of sample effects retain separate functions for Work segments. A
+registered Rule runs its guard and body
+on the selected Method receiver. Nested calls share the enclosing Rule's
+transaction. Each independent Rule reads the committed State and Queue snapshot.
+A later read inside the same transaction can see its own State writes.
+
+An unconditional whole-State write can move to the Xfer barrier when the
+emitter proves that its Rule is the only writer, has no other effect, and can
+forward its results independently of the write. In this case, the dependencies
+used exclusively by the write run on successful non-reset rising edges. The
+emitter can build an aggregate directly in its forwarded result's storage
+when the result is its only consumer. It can reuse sufficiently large,
+effect-free Work schedules while their
+typed inputs, reset sample and committed-resource snapshot are unchanged. Xfer
+invalidates the cached Work and its inputs to the deferred calculations.
+For those schedules, the emitter also makes private single-word literals and
+their fixed extracts and resizes C++ constants. Public output slots keep
+their per-Model storage.
+Work can reuse the values leaving a large group of scalar wires whose
+dependencies come from one input or committed field. Each use checks that
+field's value, including after a commit or reset.
 
 A successful non-reset rising edge commits State writes, Queue operations,
-and held results after all Work segments and checks. Conflicts and failed
+and held results after sample Work and all checks. Conflicts and failed
 source assertions return `false` with `model.error`, discard all proposals,
 and preserve the last successful clock sample and observations. Assert and
 observation paths run when their enclosing Rule executes in Work. A successful
@@ -718,11 +734,43 @@ output reads produce source diagnostics. Method-mode placeholders and unused
 captures can remain in the inferred IR.
 
 The emitter supports one root clock/reset domain, two-state Bits operations,
-nominal Structs and Enums, and the linked Method/State/Queue forms above. It
-rejects X/Z, general transactions, writable Method formals, unsupported
-primitives, and same-sample value dependency cycles. Division by zero fails
-the sample. The ordinary dual-target flow uses `pycircuit link` with the
-original source units and emits C++ or Verilog from verified final hardware.
+nominal Structs and Enums, and fixed-size Tables. Tables use the same
+`gfsim::table<T, Extents...>` value type in ports, Methods, State and Queues.
+Elements use row-major order with element zero at the packed high end.
+Struct fields can carry Tables without changing the surrounding interface.
+
+Table operations use their bound shapes. An invalid coordinate makes
+`table.index` return the element count. `table.get` tests the entire
+unsigned index before accessing an element. Membership can be used alone.
+A live payload requires an index proven in range or consumption under that
+get's membership result, such as the true arm of a branch or select.
+An unprotected payload use reports both the get and its consumer.
+
+Selected State writes participate in the same transaction as whole-value
+writes. Each records its selected packed interval. Independent Rules can
+merge disjoint proposals and read the committed snapshot. A Method can read
+its transaction's earlier writes. State initialization and reset restore the
+full declared value.
+
+Each static Collection element has its own instance path and resources.
+Collection ports distribute and gather rows in logical order. Work tracks
+the elements and Struct fields that each consumer reads, so field feedback
+can be scheduled when its actual dependencies are acyclic. Whole-value
+consumers wait for the relevant aggregate to be assembled.
+
+The RV32I verification directory includes a t-gfsim driver for the existing
+`smoke` and `held_wb_store_data` programs. Prepare those cases with
+`designs/rv32i_core/verification/prepare.py` and the pinned Spike build.
+Pass the resulting program directory and the linked-source model header to
+`designs/rv32i_core/verification/run_transactional.py`. The driver uses
+the existing memory environment and compares retirement, architectural
+state and memory effects with the independent reference.
+
+The emitter rejects X/Z, general transactions, writable Method formals,
+unsupported primitives, and same-sample value dependency cycles. Division
+by zero fails the sample. The ordinary dual-target flow uses `pycircuit link`
+with the original source units and emits C++ or Verilog from verified final
+hardware.
 
 ## Scope and verification
 

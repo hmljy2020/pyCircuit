@@ -291,6 +291,10 @@ public:
       const HardwareBindings &bindings = {},
       const std::function<mlir::LogicalResult(uint64_t, mlir::Operation *)>
           &debit = {}) const;
+  /// Compute the inclusive unsigned upper bound of a Bits SSA value.
+  mlir::FailureOr<llvm::APInt>
+  getSourceIndexMaximum(mlir::Value index, const HardwareBindings &bindings,
+                        mlir::Operation *site) const;
   /// Discharge retained source Table index obligations using bound layout and
   /// original SSA. Raw TableGet membership semantics do not use this query.
   mlir::LogicalResult verifySourceIndex(mlir::Value index, TableType table,

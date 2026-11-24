@@ -79,7 +79,7 @@ def main():
         run(*command)
         return unit
 
-    def link(name, *units):
+    def link_source(name, *units):
         command = [args.linker]
         for unit in units:
             files = json.loads((unit / "unit.json").read_text())["files"]
@@ -87,7 +87,6 @@ def main():
                 ("--body", unit / files["body"], "--header", unit / files["interface"])
             )
         linked = scratch / f"{name}.linked.ac"
-        inferred = scratch / f"{name}.inferred.ac"
         run(
             *command,
             "--top",
@@ -95,6 +94,13 @@ def main():
             "--output",
             linked,
         )
+        return linked
+
+    def link(name, *units):
+        return infer(name, link_source(name, *units))
+
+    def infer(name, linked):
+        inferred = scratch / f"{name}.inferred.ac"
         run(
             args.optimizer,
             linked,
@@ -144,8 +150,12 @@ def main():
         "GroupedOutputs": (multi, "GROUPED_OUTPUTS"),
         "Fanout": (design, "FANOUT"),
         "Stage": (design, "STAGE"),
+        "SwapState": (design, "SWAP_STATE"),
+        "CachedWork": (design, "CACHED_WORK"),
         "ThroughMethods": (design, "METHODS"),
         "TimedQueue": (design, "TIMED_QUEUE"),
+        "TableState": (design, "TABLE_STATE"),
+        "TableQueue": (design, "TABLE_QUEUE"),
         "ConflictingPops": (design, "CONFLICTING_POPS"),
         "QueueAdd": (queue, "QUEUE_ADD"),
     }
@@ -155,6 +165,28 @@ def main():
     raw_read = link("RawRead", design)
     interleaved = link("Interleaved", design)
     unknown = link("UnknownValue", design)
+
+    # Wrap the compiled stateful Module in a native Collection.
+    linked = link_source("FeedbackCell", design).read_text()
+    aliases, family = (fixtures / "collection.mlir").read_text().split("// Body\n")
+    prefix, system, rest = linked.partition('  "ac.system"()')
+    assert system
+    system = system + rest.replace(
+        "callee = @linked_gfsim.designs.FeedbackCell",
+        "callee = @linked_gfsim.designs.CollectionFamily",
+        1,
+    )
+
+    def collection(name, body):
+        package = scratch / f"{name}.linked.ac"
+        package.write_text(aliases + prefix + body + system)
+        return infer(name, package)
+
+    collection_model = collection("CollectionFamily", family)
+    collection_cycle = collection(
+        "CollectionCycle",
+        family.replace("%feedback, %first", "%feedback, %feedback"),
+    )
 
     # Feed the child output into the addition that supplies its input.
     symbol = 'sym_name = "linked_gfsim.designs.Interleaved"'
@@ -179,10 +211,12 @@ def main():
     for ir, case in inferred:
         execute(ir, case)
     execute(interleaved, "INTERLEAVED")
+    execute(collection_model, "COLLECTION_FAMILY")
     execute(checked_queue, "CHECKED_QUEUE_ADD")
     reject_emission(raw_bound, "_wired", "in_valid", "designs.py")
     reject_emission(raw_read, "inspected", "valid", "designs.py")
     reject_emission(cycle, "cyclic same-sample value dependence")
+    reject_emission(collection_cycle, "cyclic same-sample value dependence")
     reject_emission(unknown, "X/Z", "designs.py")
 
 

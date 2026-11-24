@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #pragma once
 
-#include "gfsim/bits.h"
+#include "gfsim/wire.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -91,6 +91,10 @@ public:
       committed_ = merged_;
     Discard();
   }
+
+  // The emitter can prove a whole write is the sole proposal to this State.
+  // Its value is available only at the successful, non-reset Xfer barrier.
+  void XferWhole(const T &value) noexcept { committed_ = value; }
 
   void Discard() noexcept {
     ranges_.clear();
@@ -197,6 +201,36 @@ template <unsigned Width> unsigned ShiftAmount(Bits<Width> value) {
   return value.value() > max ? max : static_cast<unsigned>(value.value());
 }
 
+template <unsigned Width>
+bool IndexInRange(const Bits<Width> &index, std::uint64_t extent) {
+  for (unsigned word = 1; word < Bits<Width>::kWords; ++word)
+    if (index.word(word) != 0)
+      return false;
+  return index.value() < extent;
+}
+
+template <unsigned Width>
+bool SameValue(const Bits<Width> &lhs, const Bits<Width> &rhs) {
+  return lhs == rhs;
+}
+
+template <class T, std::size_t... Extents>
+bool SameValue(const table<T, Extents...> &lhs,
+               const table<T, Extents...> &rhs) {
+  for (std::size_t i = 0; i < lhs.size; ++i)
+    if (!SameValue(lhs[i], rhs[i]))
+      return false;
+  return true;
+}
+
+template <class Result, class Table>
+Result TableSlice(const Table &source, std::size_t first) {
+  Result result;
+  std::copy_n(source.elements.begin() + first, Result::size,
+              result.elements.begin());
+  return result;
+}
+
 template <unsigned Width> bool SignedLess(Bits<Width> lhs, Bits<Width> rhs) {
   const bool lhsNegative = lhs.bit(Width - 1);
   const bool rhsNegative = rhs.bit(Width - 1);
@@ -208,6 +242,17 @@ template <unsigned Width> std::string Format(Bits<Width> bits) {
   for (unsigned i = Width; i > 0; --i)
     text += bits.bit(i - 1) ? '1' : '0';
   return text;
+}
+
+template <class T, std::size_t... Extents>
+std::string Format(const table<T, Extents...> &value) {
+  std::string text = "[";
+  for (const auto &element : value.elements) {
+    if (text.size() > 1)
+      text += ", ";
+    text += Format(element);
+  }
+  return text + "]";
 }
 
 } // namespace gfsim::t_gfsim

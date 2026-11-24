@@ -1787,17 +1787,37 @@ private:
         if (child->hasAttr("ac.reference_parameters"))
           return collection.emitOpError() << "collection cannot bind Module references";
         auto bound = hardware.bindInstance(collection, bindings);
-        if (failed(bound) || !budget.chargeBindings(collection, *bound) ||
-            !budget.chargeStorage<TransactionLexicalInstance>(collection, 1) ||
-            !budget.reserve(collection, plan.instances, 1))
+        if (failed(bound))
           return failure();
-        // All elements use the same definition and static bindings. A
-        // Collection is never a named Instance receiver or a reference actual.
-        LexicalInstanceId childAnchor = plan.instances.size();
-        plan.instances.push_back({child, anchor, {},
-            ArrayAttr::get(package.getContext(), {}), *bound, *bound});
-        if (failed(verifyLinkedOccurrence(childAnchor, depth + 1, visitor)))
+        uint64_t elements = 1;
+        if (visitor && visitor->collectionElement) {
+          auto shape = hardware.resolveShape(collection.getShape(), bindings,
+                                             collection);
+          if (failed(shape))
+            return failure();
+          elements = detail::shapeProduct(*shape);
+        }
+        if (!budget.chargeStorage<TransactionLexicalInstance>(collection,
+                                                              elements) ||
+            !budget.reserve(collection, plan.instances, elements))
           return failure();
+        // Named receivers still walk Instance allocations relative to their
+        // actual element. A Collection itself cannot be a receiver.
+        for (uint64_t element = 0; element < elements; ++element) {
+          if (!budget.chargeBindings(collection, *bound))
+            return failure();
+          LexicalInstanceId childAnchor = plan.instances.size();
+          plan.instances.push_back({child,
+                                    anchor,
+                                    {},
+                                    ArrayAttr::get(package.getContext(), {}),
+                                    *bound,
+                                    *bound});
+          if (visitor && visitor->collectionElement)
+            visitor->collectionElement(collection, childAnchor, element);
+          if (failed(verifyLinkedOccurrence(childAnchor, depth + 1, visitor)))
+            return failure();
+        }
       }
     }
     return success();
