@@ -133,6 +133,11 @@ LogicalResult ACIRDialect::verifyOperationAttribute(Operation *operation,
        !isa<UnitAttr>(attribute.getValue())))
     return operation->emitOpError()
            << "ac.linked_implicit_guards requires a linked-source package and a unit marker";
+  if (name == "ac.linked_inferred_guards" &&
+      (!detail::isLinkedSourcePackage(operation) ||
+       !isa<UnitAttr>(attribute.getValue())))
+    return operation->emitOpError()
+           << "ac.linked_inferred_guards requires a linked-source package and a unit marker";
   if (name == "ac.implicit_path" &&
       (!isa<SourceMethodCallOp>(operation) ||
        !isa<UnitAttr>(attribute.getValue()) ||

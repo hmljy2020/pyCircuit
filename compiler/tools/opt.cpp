@@ -30,6 +30,7 @@ int main(int argc, char **argv) {
   acir::compiler::detail::registerSourceBindingsPass();
   acir::compiler::registerSimplifyLinkedRegistrationsPass();
   acir::compiler::registerElideLinkedTrueGuardsPass();
+  acir::compiler::registerInferLinkedMethodGuardsPass();
   mlir::registerCanonicalizerPass();
   mlir::registerCSEPass();
   return mlir::asMainReturnCode(

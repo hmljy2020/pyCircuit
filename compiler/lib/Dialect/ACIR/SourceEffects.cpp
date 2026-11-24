@@ -78,6 +78,13 @@ void SourceMethodCallOp::getEffects(
   effects.emplace_back(mlir::MemoryEffects::Write::get(),
                        SourceObservationResource::get());
 }
+void SourceMethodGuardQueryOp::getEffects(
+    llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(mlir::MemoryEffects::Read::get(),
+                       SourceQueueResource::get());
+  effects.emplace_back(mlir::MemoryEffects::Read::get(),
+                       SourceStateResource::get());
+}
 void SourceTransactionOp::getEffects(
     llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects) {
   effects.emplace_back(mlir::MemoryEffects::Read::get(),

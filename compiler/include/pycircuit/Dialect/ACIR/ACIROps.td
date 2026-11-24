@@ -512,6 +512,23 @@ def ACIR_SourceMethodCallOp : ACIR_Op<"method.call", [
   }];
 }
 
+def ACIR_SourceMethodGuardQueryOp : ACIR_Op<"method.guard_query", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Query the admission guard of an original Method call";
+  let description = [{
+    This operation belongs to a linked-source Method guard. Its occurrence
+    identifies a call in that Method's body and thereby the bound receiver.
+    Operands are the original actuals used by the callee guard, in formal
+    order. Captures and state are evaluated on the callee instance. Native
+    Queue pop and peek query the committed head's availability, and push
+    queries committed capacity. Queue queries take no payload operands.
+  }];
+  let arguments = (ins Variadic<ACIR_HardwareType>:$arguments,
+      DictionaryAttr:$occurrence);
+  let results = (outs ACIR_BitsType:$predicate);
+  let hasVerifier = 1;
+}
+
 def ACIR_SourceFormalWriteOp : ACIR_Op<"formal.write", [
     AttrSizedOperandSegments,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {

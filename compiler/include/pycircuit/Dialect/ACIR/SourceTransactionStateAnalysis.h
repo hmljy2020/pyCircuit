@@ -520,9 +520,18 @@ mlir::FailureOr<bool> memoryReadCoveredBy(
     llvm::function_ref<mlir::LogicalResult(uint64_t)> pay);
 } // namespace detail
 
+struct SourceMethodView;
+struct LinkedSourceBindingVisitor {
+  llvm::function_ref<mlir::LogicalResult(ModuleOp, LexicalInstanceId)> module;
+  llvm::function_ref<mlir::LogicalResult(SourceMethodCallOp, LexicalInstanceId,
+                                        LexicalInstanceId, const SourceMethodView &)>
+      call;
+};
+
 /// Check Method bindings in the selected source hierarchy without building
 /// transaction or effect plans. The package must pass lexical source verification.
-mlir::LogicalResult verifyLinkedSourceMethodBindings(mlir::ModuleOp package);
+mlir::LogicalResult verifyLinkedSourceMethodBindings(
+    mlir::ModuleOp package, const LinkedSourceBindingVisitor *visitor = nullptr);
 
 /// Read-only analysis of every actual transaction occurrence in a builtin ModuleOp
 /// package owning its closure. Native verification and Method summaries remain

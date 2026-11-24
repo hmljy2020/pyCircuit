@@ -88,7 +88,9 @@ LogicalResult region(Operation *operation, unsigned ordinal, TypeRange inputs,
     return yield.emitOpError() << "body yield types do not match results";
   }
   for (Operation &nested : block.without_terminator()) {
-    if (isa<SourceStateReadOp>(nested))
+    if (isa<SourceStateReadOp>(nested) ||
+        (guard && isa<SourceMethodOp>(operation) &&
+         isa<SourceMethodGuardQueryOp>(nested)))
       continue;
     if (!guard &&
         isa<SourceStateWriteOp, SourceFormalWriteOp, SourceMethodCallOp,
@@ -427,6 +429,16 @@ LogicalResult SourceMethodCallOp::verify() {
   return success();
 }
 
+LogicalResult SourceMethodGuardQueryOp::verify() {
+  auto method = dyn_cast_or_null<SourceMethodOp>((*this)->getParentOp());
+  auto package = (*this)->getParentOfType<mlir::ModuleOp>();
+  if (!method || (*this)->getParentRegion() != &method.getGuard() ||
+      !detail::isLinkedSourcePackage(package) ||
+      !package->hasAttrOfType<UnitAttr>("ac.linked_inferred_guards"))
+    return emitOpError() << "requires an inferred linked-source Method guard";
+  return occurrence(*this);
+}
+
 LogicalResult SourceMethodCallOp::verifySymbolUses(SymbolTableCollection &) {
   if ((*this)->getNumRegions() != 0)
     return emitOpError() << "method call must have no regions";
@@ -492,7 +504,8 @@ Operation *detail::findUnloweredTransaction(Operation *root) {
   while (!pending.empty()) {
     Operation *operation = pending.pop_back_val();
     if (isa<SourceStateOp, SourceStateReadOp, SourceStateWriteOp,
-            SourceFormalWriteOp, SourceMethodOp, SourceMethodCallOp, SourceTransactionOp,
+            SourceFormalWriteOp, SourceMethodOp, SourceMethodCallOp,
+            SourceMethodGuardQueryOp, SourceTransactionOp,
             SourceBranchOp, SourceQueuePopOp, SourceQueuePeekOp,
             SourceQueuePushOp>(operation) ||
         (isa<InstanceOp>(operation) &&

@@ -10,6 +10,8 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
+OCCURRENCE = r"\boccurrence = (\{expansion = \[\], site = \{.*?}})"
+
 
 def call_inventory(artifact):
     text = artifact.read_text()
@@ -43,14 +45,59 @@ def method_inventory(artifact):
     )
 
 
-def method_guards(text):
-    return dict(
-        re.findall(
-            r'^    "ac.method"\([^\n]*sym_name = "([^"]+)"[^\n]*\n(.*?)^    }, \{$',
+def method_regions(text):
+    return {
+        name: (guard, body)
+        for name, guard, body in re.findall(
+            r'^    "ac.method"\([^\n]*sym_name = "([^"]+)"[^\n]*\n'
+            r"(.*?)^    }, \{\n(.*?)^    }\)",
             text,
             re.MULTILINE | re.DOTALL,
         )
-    )
+    }
+
+
+def method_guards(text):
+    return {name: guard for name, (guard, _) in method_regions(text).items()}
+
+
+def without_location_aliases(region):
+    return re.sub(r" loc\(#loc\d*\)", "", region)
+
+
+def guard_conjunction(guard):
+    """Read the SSA operands that contribute to the yielded guard."""
+    definitions = {}
+    for line in guard.splitlines():
+        result = re.match(r"\s*(%\w+) = ", line)
+        if result:
+            definitions[result[1]] = line.strip()
+
+    def terms(value):
+        line = definitions[value]
+        if '"ac.bits.binary"' in line and 'opcode = "and"' in line:
+            lhs, rhs = re.search(r'"ac.bits.binary"\((%\w+), (%\w+)\)', line).groups()
+            return terms(lhs) + terms(rhs)
+        return [line]
+
+    yielded = re.search(r'"ac.yield"\((%\w+)\)', guard)[1]
+    return definitions, terms(yielded)
+
+
+def guard_queries(terms, body):
+    calls = {}
+    for line in body.splitlines():
+        if '"ac.method.call"' in line:
+            binding = re.search(r'::@(\w+), instance_path = (\[.*?\])', line).groups()
+            calls[re.search(OCCURRENCE, line)[1]] = binding
+    queries = {}
+    for line in terms:
+        query = re.search(r'"ac.method.guard_query"\(([^)]*)\)', line)
+        if query:
+            binding = calls[re.search(OCCURRENCE, line)[1]]
+            assert binding not in queries
+            queries[binding] = query[1].split(", ") if query[1] else []
+    return queries
 
 
 def main():
@@ -259,6 +306,110 @@ def main():
     assert constants(elided_text) == constants(simplified_text)
     assert elide(elided, "queue-add-elided-again").read_bytes() == elided.read_bytes()
     run(args.optimizer, elided, "--ac-analyze-source-method-summaries", expected=1)
+
+    infer_pass = "--ac-infer-linked-method-guards"
+
+    def infer(source, name):
+        output = scratch / (name + ".ac")
+        again = scratch / (name + ".again.ac")
+        options = (infer_pass, "--mlir-print-debuginfo")
+        run(args.optimizer, source, *options, "-o", output)
+        run(args.source_linker, "--verify-only", output)
+        run(args.optimizer, output, *options, "-o", again)
+        assert output.read_bytes() == again.read_bytes()
+        assert call_inventory(source) == call_inventory(output)
+        assert method_inventory(source) == method_inventory(output)
+        return output
+
+    for source in (simplified, elided):
+        inferred = infer(source, source.stem + "-inferred")
+        guard, body = method_regions(inferred.read_text())["add"]
+        original_body = method_regions(source.read_text())["add"][1]
+        assert without_location_aliases(body) == without_location_aliases(original_body)
+        assert 'opcode = "add"' in body
+        _, terms = guard_conjunction(guard)
+        assert guard_queries(terms, body) == {
+            ("pop", '["left_input"]'): [],
+            ("pop", '["right_input"]'): [],
+            ("push", '["output"]'): [],
+        }
+        assert all(
+            '"ac.method.guard_query"' in term
+            or ('"ac.bits.constant"' in term and "value = #ac.math_int<1>" in term)
+            for term in terms
+        )
+
+    guard_source = Path(__file__).resolve().parent / "linked_method_guards.py"
+    guarded = compile_unit(guard_source)
+    guards_input = scratch / "nested-guards.ac"
+    link(
+        [guarded],
+        "serial_methods.linked_method_guards.GuardSystem",
+        guards_input,
+    )
+    nested = simplify(guards_input, "nested-guards-simplified")
+    original_regions = method_regions(nested.read_text())
+    inferred_text = infer(nested, "nested-guards-inferred").read_text()
+    inferred_regions = method_regions(inferred_text)
+    assert without_location_aliases("".join(inferred_regions["accept"])) == (
+        without_location_aliases("".join(original_regions["accept"]))
+    )
+    assert 'state = "ceiling"' in inferred_regions["accept"][0]
+
+    drive_guard, drive_body = inferred_regions["drive"]
+    definitions, terms = guard_conjunction(drive_guard)
+    assert len(terms) == 2
+    assert any('predicate = "ult"' in term for term in terms)
+    queries = guard_queries(terms, drive_body)
+    assert sorted(queries) == [("route", '["relay"]')]
+    (argument,) = queries[("route", '["relay"]')]
+    assert 'state = "value"' in definitions[argument]
+
+    route_guard, route_body = inferred_regions["route"]
+    assert without_location_aliases(route_body) == without_location_aliases(
+        original_regions["route"][1]
+    )
+    definitions, terms = guard_conjunction(route_guard)
+    assert len(terms) == 3
+    assert any('predicate = "ne"' in term for term in terms)
+    queries = guard_queries(terms, route_body)
+    assert sorted(queries) == [("accept", '["left"]'), ("accept", '["right"]')]
+    for receiver, increment in (("left", 1), ("right", 2)):
+        (argument,) = queries[("accept", '["' + receiver + '"]')]
+        addition = definitions[argument]
+        assert 'opcode = "add"' in addition
+        entry_arg, constant = re.search(
+            r'"ac.bits.binary"\((%\w+), (%\w+)\)', addition
+        ).groups()
+        assert route_guard.lstrip().startswith(f"^bb0({entry_arg}:")
+        assert f"value = #ac.math_int<{increment}>" in definitions[constant]
+
+    # Both targets have the same signature. Swapping the two occurrences keeps
+    # their argument types intact while routing each guard to the wrong call.
+    left, right = re.findall(r'"ac.method.guard_query".*?' + OCCURRENCE, route_guard)
+    swapped = {left: right, right: left}
+    wrong_guard = re.sub(
+        OCCURRENCE,
+        lambda match: "occurrence = " + swapped.get(match[1], match[1]),
+        route_guard,
+    )
+    wrong_binding = scratch / "wrong-guard-binding.ac"
+    wrong_binding.write_text(inferred_text.replace(route_guard, wrong_guard, 1))
+    run(args.source_linker, "--verify-only", wrong_binding, expected=1)
+
+    prior = scratch / "prior-result.ac"
+    link([guarded], "serial_methods.linked_method_guards.PriorResultSystem", prior)
+    prior = simplify(prior, "prior-result-simplified")
+    rejected = scratch / "prior-result-inferred.ac"
+    error = run(args.optimizer, prior, infer_pass, "-o", rejected, expected=1).stderr
+    assert "guard" in error and "ac.method.call" in error
+    call_line = next(
+        line
+        for line, source in enumerate(guard_source.read_text().splitlines(), 1)
+        if "left.accept(right.read(), 0)" in source
+    )
+    assert f"{guard_source.name}:{call_line}:" in error
+    assert not rejected.exists()
 
     dead_guard_constant = constants(guards["add"])[0]
     pruned = scratch / "queue-add-pruned.ac"

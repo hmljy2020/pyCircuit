@@ -610,10 +610,60 @@ the constant definitions and source locations. A later dead-code pass may
 remove the unused constants. Applying the elision pass again gives the same
 result.
 
-Rule admission, FIFO wiring and high-level GFSIM generation are downstream
-stages. FIFO admission still follows the resource contract. Use
-`pycircuit link` with the original source units to produce final hardware for
-the C++ and Verilog emitters.
+### Compact linked ACIR view
+
+Use `print-linked-acir` to inspect linked ACIR after linking or after any of
+the linked-source passes:
+
+```bash
+"$BUILD_DIR/bin/print-linked-acir" .pycircuit_out/inferred.ac
+```
+
+The command writes a reading view to standard output. It shortens source
+provenance and static expressions, omits unused Method captures, and gives each
+guard query and its body call the same short ID. Types, instance connections,
+state operations, guards and Queue configuration remain visible. Keep using the
+complete `.ac` artifact for verification and subsequent compiler stages.
+
+### Method admission for high-level GFSIM
+
+Run the inference pass on simplified linked-source ACIR. It accepts both
+explicit guards and guards processed by `--ac-elide-linked-true-guards`.
+
+```bash
+"$BUILD_DIR/bin/pycircuit-opt" .pycircuit_out/simplified.ac \
+  --ac-infer-linked-method-guards --mlir-print-debuginfo \
+  -o .pycircuit_out/inferred.ac
+"$BUILD_DIR/bin/pycircuit-link-acir" --verify-only .pycircuit_out/inferred.ac
+```
+
+The pass follows simplified registrations in the selected instance tree and
+updates reachable Method guards from callee to caller. Each guard combines its
+explicit predicate, if present, with admission for every direct Method call,
+including calls in both arms of a branch. The resulting Method guard is the
+registered Rule's fire predicate. Execution bodies retain their original calls
+and payload computations.
+
+Each `ac.method.guard_query` uses the original call occurrence to identify the
+callee and its bound instance. It passes only actuals used by the callee
+guard. The callee evaluates captures and state in its own instance. Queue
+`pop` and `peek` query committed head availability, and `push` queries committed
+capacity. A pop in the same transaction cannot grant admission to a push on a
+full Queue. Queue queries take no payload operands.
+
+The verifier checks each query against its original call, its admission-time
+argument computations and the one-bit guard conjunction. Applying the pass
+again gives the same result. Guard dependencies on earlier Method results or
+prior transaction state candidates fail at the call site. A whole-aggregate
+state read requires the entire value to be committed even when a later
+operation projects a field or lane. Recursive calls, native Memory terminals
+and Method calls inside general `ac.transaction` operations in the selected
+hierarchy also fail at the call site.
+
+This pass produces the admission artifact for high-level GFSIM. GFSIM code
+generation and runtime support follow in a later stage. Use `pycircuit link`
+with the original source units to produce final hardware for the C++ and
+Verilog emitters.
 
 ## Scope and verification
 

@@ -399,7 +399,7 @@ LogicalResult verifyLinkedSourceACIR(ModuleOp package) {
       SourceHeaderRegistry::create(package.getContext(), {}, emitError);
   if (failed(catalog) || failed(verifySymbolClosure(package, *catalog)))
     return failure();
-  return ac::verifyLinkedSourceMethodBindings(package);
+  return verifyLinkedMethodGuards(package);
 }
 
 FailureOr<OwningOpRef<ModuleOp>>

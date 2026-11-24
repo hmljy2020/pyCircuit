@@ -21,6 +21,8 @@ linkSourceACIR(llvm::ArrayRef<SourceLinkUnit> units, llvm::StringRef top,
 mlir::LogicalResult verifyLinkedSourceACIR(mlir::ModuleOp package);
 void registerSimplifyLinkedRegistrationsPass();
 void registerElideLinkedTrueGuardsPass();
+void registerInferLinkedMethodGuardsPass();
+mlir::LogicalResult verifyLinkedMethodGuards(mlir::ModuleOp package);
 
 } // namespace acir::compiler
 

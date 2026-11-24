@@ -2,6 +2,7 @@ add_acir_library(ACIRSourceCompiler SOURCES
   AnchorArtifact.cpp
   ExecutionProjection.cpp
   FixedUnsignedDivRemLowering.cpp
+  LinkedMethodGuards.cpp
   LinkedSourceACIR.cpp
   NumericLowering.cpp
   PythonImportAST.cpp
@@ -35,6 +36,7 @@ add_acir_library(ACIRSourceCompiler SOURCES
     MLIRParser
     MLIRPass
     MLIRSCFDialect
+    MLIRTransformUtils
 )
 target_include_directories(ACIRSourceCompiler PUBLIC
   "$<BUILD_INTERFACE:${PYCIRCUIT_SOURCE_DIR}/lib>"
