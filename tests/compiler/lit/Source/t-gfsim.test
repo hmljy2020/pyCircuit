@@ -1,0 +1,1 @@
+# RUN: %python %S/Inputs/t-gfsim/run.py --repo %src --cxx %cxx --source-compiler %pycircuit_source_unit --linker %pycircuit_link_acir --final-linker %pycircuit_link --final-emitter %pycircuit_emit --optimizer %pycircuit_opt --emitter %pycircuit_emit_t_gfsim --scratch %t.dir

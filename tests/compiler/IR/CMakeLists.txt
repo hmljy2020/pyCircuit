@@ -236,7 +236,7 @@ configure_file("${CMAKE_CURRENT_LIST_DIR}/../lit/lit.site.cfg.py.in"
   "${_lit_binary}/lit.site.cfg.py" @ONLY)
 # Complementary filters preserve the complete lit inventory without duplicates.
 # Fast verifier/pass tests plus source diagnostics and publication protection.
-set(_lit_gate_filter "(IR/|Transforms/|Source/(linked-source-acir|source-interface-extraction(-invalid)?|source-checks|source-observation-behavioral|serial-method-public)\\.test|CodeGen/(output-preservation|two-leaves|constant-field-planes|work-function-outline|bits-case-equality|sampled-admission)\\.test)")
+set(_lit_gate_filter "(IR/|Transforms/|Source/(t-gfsim|linked-source-acir|source-interface-extraction(-invalid)?|source-checks|source-observation-behavioral|serial-method-public)\\.test|CodeGen/(output-preservation|two-leaves|constant-field-planes|work-function-outline|bits-case-equality|sampled-admission)\\.test)")
 add_test(NAME ACIRLitGateTests COMMAND "${LLVM_EXTERNAL_LIT}" -sv
   --filter "${_lit_gate_filter}" "${_lit_binary}")
 add_test(NAME ACIRLitNightlyTests COMMAND "${LLVM_EXTERNAL_LIT}" -sv
@@ -252,7 +252,7 @@ add_custom_target(check-pycircuit
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure --no-tests=error
     -L "^api$" -L "^${PYC_TEST_TIER}$" --output-junit "api-${PYC_TEST_TIER}.xml"
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-  DEPENDS pycircuit-opt pycircuit-emit pycircuit-source-unit pycircuit-link pycircuit-link-acir
+  DEPENDS pycircuit-opt pycircuit-emit pycircuit-source-unit pycircuit-link pycircuit-link-acir pycircuit-emit-t-gfsim
     ACIRRoutedAnchorTests ACIRAnchorArtifactTests ACIRSourceValueSemanticsTests ACIRSourceStaticEvaluationTests ACIRSourceIdentifierTests
     ACIRExactIntegerLoweringTests
     ACIRFixedUnsignedDivRemLoweringTests

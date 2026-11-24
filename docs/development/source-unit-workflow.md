@@ -625,7 +625,7 @@ guard query and its body call the same short ID. Types, instance connections,
 state operations, guards and Queue configuration remain visible. Keep using the
 complete `.ac` artifact for verification and subsequent compiler stages.
 
-### Method admission for high-level GFSIM
+### Method admission for t-gfsim
 
 Run the inference pass on simplified linked-source ACIR. It accepts both
 explicit guards and guards processed by `--ac-elide-linked-true-guards`.
@@ -660,10 +660,69 @@ operation projects a field or lane. Recursive calls, native Memory terminals
 and Method calls inside general `ac.transaction` operations in the selected
 hierarchy also fail at the call site.
 
-This pass produces the admission artifact for high-level GFSIM. GFSIM code
-generation and runtime support follow in a later stage. Use `pycircuit link`
-with the original source units to produce final hardware for the C++ and
-Verilog emitters.
+### Generate and run t-gfsim
+
+Transactional GFSIM (`t-gfsim`) is an experimental simulation path.
+Its `pycircuit-emit-t-gfsim` tool verifies the full inferred linked ACIR
+and creates one C++20 header at a fresh path. The generated model
+uses the Runtime headers and can be compiled without LLVM:
+
+```bash
+"$BUILD_DIR/bin/pycircuit-emit-t-gfsim" .pycircuit_out/inferred.ac \
+  --output .pycircuit_out/model.h
+c++ -std=c++20 -I "$PYC_TOOLCHAIN_ROOT/include" -I .pycircuit_out \
+  simulate.cpp -o .pycircuit_out/simulate
+```
+
+Instantiate `gfsim::t_gfsim::Model`, drive its typed `in_<name>` values,
+call `Step()`, and read the `out_<name>` references. Use the emitted header for
+the concrete names and types. Clocked models expose the selected root clock
+and reset, typically `in_pyc_clk` and `in_pyc_rst`. A successful step records
+the sampled clock level. Drive low then high to commit another rising edge.
+A System with explicit two-state sample rows also has `Run()` to replay them.
+
+Construction binds every endpoint to its typed value. Forwarding and fanout
+share the producing slot. Each `Step()` runs a static Work schedule derived
+from same-sample reads. When whole instances can be ordered, each instance
+runs one `Work()`. When a parent produces a child's input and then consumes
+its output in the same sample, the emitter follows the operation dependency
+order. Consecutive operations from the same instance form a Work segment and
+values between segments use the same shared slots. An instance with several
+segments emits `Work_0()`, `Work_1()`, and so on. A registered Rule's guard
+and body execute together on the selected Method receiver. Nested calls share
+the enclosing Rule's transaction. Each independent Rule reads the committed
+State and Queue snapshot. A later read inside the same transaction can see its
+own State writes.
+
+A successful non-reset rising edge commits State writes, Queue operations,
+and held results after all Work segments and checks. Conflicts and failed
+source assertions return `false` with `model.error`, discard all proposals,
+and preserve the last successful clock sample and observations. Assert and
+observation paths run when their enclosing Rule executes in Work. A successful
+reset edge restores State initial values, clears Queues, and resets held
+results. Reset suppresses Rule execution. Plain combinational Work still runs.
+
+A conditional registered Rule result starts at typed zero and holds its last
+committed value. A direct output reference to Q or a held result reflects Xfer
+immediately. Logic that consumes that slot in Work sees the new value on the
+next sample. Always-admitted Rule results propagate in the same Work sample
+and use typed zero during reset. A System that checks a QueueAdd result from
+the first non-reset sample must account for the initial zero and wait until a
+sum has committed.
+
+Queue `push` requires a free committed slot. `pop` and `peek` require a
+committed, mature head. There is no same-edge replacement credit for a full
+Queue or bypass through an empty Queue. Successful rising edges advance
+Queue latency even when no Rule fires. Raw Queue input bindings and live raw
+output reads produce source diagnostics. Method-mode placeholders and unused
+captures can remain in the inferred IR.
+
+The emitter supports one root clock/reset domain, two-state Bits operations,
+nominal Structs and Enums, and the linked Method/State/Queue forms above. It
+rejects X/Z, general transactions, writable Method formals, unsupported
+primitives, and same-sample value dependency cycles. Division by zero fails
+the sample. The ordinary dual-target flow uses `pycircuit link` with the
+original source units and emits C++ or Verilog from verified final hardware.
 
 ## Scope and verification
 

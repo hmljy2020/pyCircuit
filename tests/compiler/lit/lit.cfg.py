@@ -18,6 +18,7 @@ os.makedirs(config.test_exec_root, exist_ok=True)
 
 for name, path in (
     ("%pycircuit_opt", config.pycircuit_opt),
+    ("%pycircuit_emit_t_gfsim", config.pycircuit_emit_t_gfsim),
     ("%pycircuit_emit", config.pycircuit_emit),
     ("%pycircuit_source_unit", config.pycircuit_source_unit),
     ("%pycircuit_link_acir", config.pycircuit_link_acir),

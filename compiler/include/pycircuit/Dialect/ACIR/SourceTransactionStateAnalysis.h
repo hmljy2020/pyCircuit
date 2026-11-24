@@ -522,7 +522,8 @@ mlir::FailureOr<bool> memoryReadCoveredBy(
 
 struct SourceMethodView;
 struct LinkedSourceBindingVisitor {
-  llvm::function_ref<mlir::LogicalResult(ModuleOp, LexicalInstanceId)> module;
+  llvm::function_ref<mlir::LogicalResult(const TransactionLexicalInstance &,
+                                        LexicalInstanceId)> module;
   llvm::function_ref<mlir::LogicalResult(SourceMethodCallOp, LexicalInstanceId,
                                         LexicalInstanceId, const SourceMethodView &)>
       call;

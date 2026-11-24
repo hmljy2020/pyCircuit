@@ -1,6 +1,7 @@
 config.pycircuit_src_root = "@PYCIRCUIT_REPO_ROOT@"
 config.pycircuit_obj_root = "@CMAKE_BINARY_DIR@"
 config.pycircuit_opt = "@CMAKE_BINARY_DIR@/bin/pycircuit-opt"
+config.pycircuit_emit_t_gfsim = "@CMAKE_BINARY_DIR@/bin/pycircuit-emit-t-gfsim"
 config.pycircuit_emit = "@CMAKE_BINARY_DIR@/bin/pycircuit-emit"
 config.pycircuit_source_unit = "@CMAKE_BINARY_DIR@/bin/pycircuit-source-unit"
 config.pycircuit_link_acir = "@CMAKE_BINARY_DIR@/bin/pycircuit-link-acir"

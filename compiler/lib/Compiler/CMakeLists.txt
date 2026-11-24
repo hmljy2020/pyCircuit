@@ -2,6 +2,8 @@ add_acir_library(ACIRSourceCompiler SOURCES
   AnchorArtifact.cpp
   ExecutionProjection.cpp
   FixedUnsignedDivRemLowering.cpp
+  LinkedCpp.cpp
+  LinkedCppPlan.cpp
   LinkedMethodGuards.cpp
   LinkedSourceACIR.cpp
   NumericLowering.cpp

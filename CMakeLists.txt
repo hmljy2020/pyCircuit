@@ -35,6 +35,7 @@ if(PYC_BUILD_COMPILER_DEV)
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   install(TARGETS pycircuit-source-unit pycircuit-link pycircuit-emit pycircuit-opt
+    pycircuit-link-acir pycircuit-emit-t-gfsim print-linked-acir
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
   install(DIRECTORY compiler/include/pycircuit
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"

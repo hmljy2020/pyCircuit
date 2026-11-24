@@ -1751,7 +1751,7 @@ private:
         return failure();
       linkedOccurrences.insert(module);
     }
-    if (visitor && failed(visitor->module(module, anchor)))
+    if (visitor && failed(visitor->module(plan.instances[anchor], anchor)))
       return failure();
     auto result = module.walk([&](SourceMethodCallOp call) {
       return failed(verifyLinkedCall(call, anchor, visitor)) ? WalkResult::interrupt()

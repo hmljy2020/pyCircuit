@@ -37,6 +37,12 @@ target_link_libraries(print-linked-acir PRIVATE
   ACIRSourceCompiler
 )
 
+add_executable(pycircuit-emit-t-gfsim emit-t-gfsim.cpp)
+target_link_libraries(pycircuit-emit-t-gfsim PRIVATE
+  pycircuit_project_options
+  ACIRSourceCompiler
+)
+
 # Native source-owned emitter used by the public publication driver.
 add_executable(pycircuit-emit emit.cpp)
 target_link_libraries(pycircuit-emit PRIVATE

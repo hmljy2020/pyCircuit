@@ -136,7 +136,9 @@ public:
       : package(package), infer(infer) {}
 
   LogicalResult run() {
-    auto visitModule = [](ac::ModuleOp module, LexicalInstanceId) {
+    auto visitModule = [](const ac::TransactionLexicalInstance &instance,
+                          LexicalInstanceId) {
+      auto module = instance.definition;
       for (auto transaction :
            module.getBody().front().getOps<ac::SourceTransactionOp>()) {
         auto walk = transaction.walk([](SourceMethodCallOp call) {
