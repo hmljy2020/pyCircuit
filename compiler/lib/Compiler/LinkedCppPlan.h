@@ -11,10 +11,6 @@ using InstanceId = ac::LexicalInstanceId;
 using Net = std::pair<InstanceId, mlir::Value>;
 using Site = std::pair<InstanceId, mlir::Operation *>;
 
-inline bool checksDivisor(ac::BitsBinaryOp op) {
-  return op.getOpcode() == "udiv" || op.getOpcode() == "urem";
-}
-
 struct Target {
   InstanceId receiver;
   ac::SourceMethodOp method;
@@ -37,6 +33,7 @@ struct Resource {
   Net initial;
   uint64_t depth = 0;
   uint64_t latency = 0;
+  bool wholeProposal = false;
 };
 
 struct Projection {
@@ -66,8 +63,6 @@ struct Node {
   llvm::SmallVector<Copy, 0> copies;
   // If set, the copies are alternatives in logical lane order.
   mlir::Value copyIndex = {};
-  // This node reads a root input or committed slot outside its producer edges.
-  bool readsSampleInput = false;
 };
 
 struct Instance {
@@ -87,17 +82,12 @@ struct WorkSegment {
   size_t begin, end; // Half-open range in Instance::work.
 };
 
-struct DeferredWrite {
-  unsigned resource;
-  Net value;
-  llvm::SmallVector<Net> outputs;
-};
-
 class Plan {
 public:
   explicit Plan(mlir::ModuleOp package) : package(package), hardware(package) {}
   mlir::LogicalResult build();
 
+  bool canReuseProposal() const;
   ProjectedNet projection(Net net) const;
   bool isLive(Site site) const { return liveSites.contains(site); }
   bool isTableMapResultLive(Net result) const {
@@ -109,9 +99,6 @@ public:
   }
   bool captureByProjection(Net net) const {
     return projectedCaptures.contains(net);
-  }
-  bool usesMethod(Site method) const {
-    return sampleMethods.contains(method);
   }
   const Target &target(Site site) const { return targets.find(site)->second; }
   const ac::HardwareBindings &bindings(InstanceId id) const {
@@ -135,11 +122,6 @@ public:
   llvm::SmallVector<Node> nodes;
   llvm::SmallVector<unsigned> fixed;
   llvm::SmallVector<WorkSegment> schedule;
-  llvm::DenseMap<unsigned, DeferredWrite> deferredWrites;
-  llvm::DenseSet<unsigned> edgeWork;
-  llvm::DenseSet<Net> cacheFrontier;
-  llvm::DenseSet<mlir::Value> workInputs;
-  bool pureWork = false;
   Net clock{}, reset{};
 
 private:
@@ -149,8 +131,8 @@ private:
                   ac::SourceMethodOp method);
   mlir::LogicalResult connect(InstanceId id, Instance &instance);
   mlir::LogicalResult checkDomains();
+  void planWholeStateWrites();
   void scheduleWork();
-  mlir::LogicalResult deferWholeWrites();
   mlir::LogicalResult activate(Site site);
   mlir::LogicalResult activateResult(Net net);
   mlir::FailureOr<std::optional<unsigned>>
@@ -205,11 +187,6 @@ private:
   llvm::DenseSet<Net> projectedCaptures;
   llvm::DenseMap<Site, std::optional<ProjectedNet>> captureProjections;
   llvm::DenseMap<Site, bool> totalGuards;
-  llvm::DenseMap<unsigned, std::optional<unsigned>> stateWriters;
-  llvm::SmallVector<unsigned> sampleRoots;
-  llvm::SmallVector<std::pair<Site, unsigned>> methodUsers;
-  llvm::SmallVector<std::pair<Net, unsigned>> captureUsers;
-  llvm::DenseSet<Site> sampleMethods;
   llvm::SmallVector<Net> aliasesToValidate;
   llvm::SmallVector<std::pair<InstanceId, size_t>> workOrder;
 };

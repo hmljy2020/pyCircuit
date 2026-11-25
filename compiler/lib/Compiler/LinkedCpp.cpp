@@ -19,9 +19,6 @@ namespace {
 // before the host compiler has a chance to eliminate temporaries.
 constexpr size_t maxInlineWork = 8192;
 constexpr uint64_t maxLocalBytes = 128 * 1024;
-constexpr size_t minCachedOperations = 256;
-constexpr size_t minConeOperations = 128;
-
 std::string quote(StringRef name) {
   std::string result = "\"";
   for (unsigned char ch : name) {
@@ -111,11 +108,6 @@ struct Nominal {
   uint64_t bytes;
 };
 
-struct WorkCone {
-  ProjectedNet input;
-  SmallVector<unsigned> nodes;
-};
-
 class Cpp {
 public:
   Cpp(const Plan &plan, llvm::raw_ostream &out) : plan(plan), out(out) {}
@@ -123,9 +115,8 @@ public:
 
 private:
   LogicalResult planTypes();
-  void planForwardedResults();
   LogicalResult planConstantSlots();
-  LogicalResult planWorkCone();
+  LogicalResult planProposalInputs();
   FailureOr<std::string> type(Type type, InstanceId id, Operation *site,
                               uint64_t *bytes = nullptr);
   FailureOr<unsigned> width(Type type, InstanceId id, Operation *site);
@@ -158,19 +149,11 @@ private:
   LogicalResult invoke(ac::SourceMethodCallOp call, Expr &scope,
                        unsigned indent);
   LogicalResult branch(ac::SourceBranchOp op, Expr &scope, unsigned indent);
-  LogicalResult work(const WorkSegment &segment, StringRef qualifier,
-                     bool edge = false);
-  LogicalResult sampleWork();
-  LogicalResult xfer();
-  LogicalResult emitModel(ArrayAttr samples);
+  LogicalResult work(const WorkSegment &segment, StringRef qualifier);
+  LogicalResult emitModel();
   void rootOutputBindings(const Instance &root);
-  bool needsMethod(InstanceId id, ac::SourceMethodOp method) const {
-    return !inlineWork || plan.usesMethod({id, method});
-  }
-  bool needsModule(InstanceId id, const Instance &instance) const {
-    return (!inlineWork && instance.workSegments) ||
-           llvm::any_of(instance.methods,
-                        [&](auto method) { return needsMethod(id, method); });
+  bool needsModule(const Instance &instance) const {
+    return (!inlineWork && instance.workSegments) || !instance.methods.empty();
   }
 
   const Plan &plan;
@@ -178,12 +161,10 @@ private:
   llvm::DenseMap<Type, Nominal> nominals;
   llvm::DenseMap<Value, std::string> inputs;
   llvm::DenseMap<Operation *, unsigned> methodIds;
-  llvm::DenseMap<Net, Net> forwardedResults;
-  llvm::DenseSet<Net> localSlots, borrowedSlots, constantSlots, coneSlots;
-  llvm::DenseSet<unsigned> coneNodes;
-  WorkCone cone;
-  SmallVector<Value> cacheInputs;
-  bool cacheWork = false;
+  llvm::DenseMap<Net, ProjectedNet> forwardedSlots;
+  llvm::DenseSet<Net> localSlots, initializedSlots, borrowedSlots, constantSlots;
+  SmallVector<std::string> proposalInputTypes, proposalInputValues;
+  bool reuseProposal = false;
   bool inlineWork = false;
   unsigned nextLocal = 0;
 };
@@ -254,15 +235,6 @@ FailureOr<std::string> Cpp::type(Type t, InstanceId id, Operation *site,
     out << "struct " << name << " { // " << record.getName().getValue() << '\n';
     for (auto [i, member] : llvm::enumerate(fields))
       out << "  " << member << " field_" << i << "{};\n";
-    if (cacheWork) {
-      out << "  friend bool SameValue([[maybe_unused]] const " << name
-          << " &lhs, [[maybe_unused]] const " << name
-          << " &rhs) {\n    return true";
-      for (unsigned i = 0; i < fields.size(); ++i)
-        out << "\n        && SameValue(lhs.field_" << i << ", rhs.field_" << i
-            << ')';
-      out << ";\n  }\n";
-    }
     out << "};\ninline std::string Format(const " << name << " &value) {\n"
         << "  return std::string(\"{\")";
     for (unsigned i = 0; i < fields.size(); ++i)
@@ -279,9 +251,6 @@ FailureOr<std::string> Cpp::type(Type t, InstanceId id, Operation *site,
     if (bytes)
       *bytes = size;
     out << "struct " << name << " { " << bits(definition->width) << " code{};";
-    if (cacheWork)
-      out << " friend bool SameValue(const " << name << " &lhs, const " << name
-          << " &rhs) { return SameValue(lhs.code, rhs.code); }";
     out << " }; // " << enumeration.getName().getValue() << '\n'
         << "inline std::string Format(const " << name
         << " &value) { return Format(value.code); }\n";
@@ -383,24 +352,16 @@ FailureOr<Selection> Cpp::select(Type t, ArrayAttr selectors, InstanceId id,
 
 LogicalResult Cpp::planTypes() {
   size_t workSize = 0;
-  size_t sampleSize = 0;
   bool hasWireWork = false;
-  for (auto [index, node] : llvm::enumerate(plan.nodes)) {
+  for (const auto &node : plan.nodes) {
     if (!node.fixed) {
       workSize += 1 + node.copies.size();
-      sampleSize += !plan.edgeWork.contains(index);
       hasWireWork |= !isa<ac::SourceMethodCallOp, ac::SourceExpectOp,
                           ac::SourceObserveOp>(node.site.second);
     }
   }
-  // Effect-only schedules have no intermediate wires to localize. Keep
-  // their existing function boundaries unless the effects can be deferred.
-  inlineWork = workSize <= maxInlineWork &&
-               (hasWireWork || plan.pureWork || !plan.deferredWrites.empty());
-  cacheWork = inlineWork && plan.pureWork && !plan.deferredWrites.empty() &&
-              sampleSize >= minCachedOperations;
-  planForwardedResults();
-  uint64_t localBytes = 0;
+  // Effect-only schedules have no intermediate wires to localize.
+  inlineWork = workSize <= maxInlineWork && hasWireWork;
   auto need = [&](Value value, InstanceId id, Operation *site) {
     return success(succeeded(type(value.getType(), id, site)));
   };
@@ -408,48 +369,83 @@ LogicalResult Cpp::planTypes() {
     if (failed(
             type(resource.type, resource.owner, plan.module(resource.owner))))
       return failure();
-  if (cacheWork) {
-    uint64_t inputBytes = 0;
-    for (auto [id, value] : plan.instances.at(0).inputs) {
-      if (!plan.workInputs.contains(value) || value == plan.reset.second)
-        continue;
-      uint64_t bytes;
-      if (failed(type(value.getType(), id, plan.module(id), &bytes)))
-        return failure();
-      inputBytes += bytes;
-      cacheInputs.push_back(value);
-    }
-    // A cache miss already pays for Work. Keep the comparison and snapshot
-    // small relative to the number of calculations it can avoid.
-    cacheWork = inputBytes <= 4 * sampleSize;
-    if (!cacheWork)
-      cacheInputs.clear();
-  }
-  if (cacheWork && (failed(planConstantSlots()) || failed(planWorkCone())))
+  if (failed(planConstantSlots()))
     return failure();
-  llvm::DenseSet<Net> committedProjections;
-  if (inlineWork)
-    for (const auto &node : plan.nodes)
-      // A StructGet has one producer and copies a complete value. A
-      // projection of committed storage stays unchanged throughout Work.
-      if (isa<ac::StructGetOp>(node.site.second) && node.copies.size() == 1 &&
-          plan.storedNets.contains(node.copies.front().source.net))
-        committedProjections.insert(node.copies.front().destination.net);
+
+  llvm::DenseSet<Net> boundarySlots;
+  llvm::DenseMap<Net, unsigned> assignments;
+  llvm::DenseSet<Net> wholeDefinitions;
+  llvm::DenseMap<Net, ProjectedNet> copies;
+  if (inlineWork) {
+    for (const auto &[id, instance] : plan.instances)
+      for (Net port : llvm::concat<const Net>(instance.inputs, instance.outputs))
+        boundarySlots.insert(plan.projection(port).net);
+    for (const auto &node : plan.nodes) {
+      auto [id, op] = node.site;
+      if (!node.copies.empty()) {
+        const auto &destination = node.copies.front().destination;
+        if (node.copies.size() == 1 && !node.copyIndex &&
+            destination.path.empty()) {
+          wholeDefinitions.insert(destination.net);
+          copies.try_emplace(destination.net, node.copies.front().source);
+        }
+        for (const auto &copy : node.copies)
+          ++assignments[copy.destination.net];
+      } else {
+        auto define = [&](Value value) {
+          Net net{id, value};
+          ++assignments[net];
+          if (!isa<ac::SourceMethodCallOp, ac::TableMapOp, ac::TableMatchOp>(op))
+            wholeDefinitions.insert(net);
+        };
+        if (node.result)
+          define(node.result);
+        else
+          for (Value value : op->getResults())
+            define(value);
+      }
+    }
+  }
+  uint64_t localBytes = 0;
   for (Net net : plan.slots) {
     auto [id, value] = net;
+    if (net == plan.clock || net == plan.reset)
+      continue;
     uint64_t bytes;
     if (failed(type(value.getType(), id, plan.module(id), &bytes)))
       return failure();
-    if (!inlineWork || (id == 0 && isa<BlockArgument>(value)) ||
-        plan.persistentSlots.contains(net) || plan.methodSlots.contains(net) ||
-        forwardedResults.contains(net) || coneSlots.contains(net) ||
-        (cacheWork && plan.cacheFrontier.contains(net)))
+    if (!inlineWork || boundarySlots.contains(net) ||
+        plan.persistentSlots.contains(net) || plan.methodSlots.contains(net))
       continue;
-    if (bytes > sizeof(uint64_t) && committedProjections.contains(net)) {
-      borrowedSlots.insert(net);
-    } else if (bytes <= maxLocalBytes - localBytes) {
+    bool singleDefinition =
+        assignments.lookup(net) == 1 && wholeDefinitions.contains(net);
+    auto copy = copies.find(net);
+    if (singleDefinition && copy != copies.end()) {
+      const auto &source = copy->second;
+      const bool committed = plan.storedNets.contains(source.net);
+      const bool stable =
+          committed ||
+          (source.net.first == 0 && isa<BlockArgument>(source.net.second)) ||
+          (assignments.lookup(source.net) == 1 &&
+           wholeDefinitions.contains(source.net));
+      // Forward only within the instance, and only if the source's complete
+      // value is stable until the end of Work. Mutable and partial copies
+      // still have their own slots.
+      if (source.net.first == id && stable &&
+          isa<ac::BitsType>(value.getType())) {
+        forwardedSlots.try_emplace(net, source);
+        continue;
+      }
+      if (committed && bytes > sizeof(uint64_t)) {
+        borrowedSlots.insert(net);
+        continue;
+      }
+    }
+    if (bytes <= maxLocalBytes - localBytes) {
       localSlots.insert(net);
       localBytes += bytes;
+      if (singleDefinition)
+        initializedSlots.insert(net);
     }
   }
   for (const auto &node : plan.nodes) {
@@ -527,145 +523,31 @@ LogicalResult Cpp::planConstantSlots() {
   return success();
 }
 
-LogicalResult Cpp::planWorkCone() {
-  // A closed scalar cone can be evaluated before the rest of Work. Accept
-  // only single-result wires and a single exactly identified sampled source.
-  SmallVector<WorkCone> candidates;
-  llvm::DenseMap<unsigned, unsigned> coneOfNode;
-  llvm::DenseMap<Net, SmallVector<unsigned, 1>> conesByInput;
-  auto findCone = [&](const ProjectedNet &input) {
-    auto &matching = conesByInput[input.net];
-    for (unsigned index : matching)
-      if (candidates[index].input == input)
-        return index;
-    unsigned index = candidates.size();
-    matching.push_back(index);
-    candidates.push_back({input, {}});
-    return index;
-  };
-  for (const auto &segment : plan.schedule) {
-    auto operations = ArrayRef(plan.instances.at(segment.instance).work);
-    for (unsigned index :
-         operations.slice(segment.begin, segment.end - segment.begin)) {
-      if (plan.edgeWork.contains(index))
-        continue;
-      const Node &node = plan.nodes[index];
-      auto [id, op] = node.site;
-      if (!isa<ac::BitsUnaryOp, ac::BitsBinaryOp, ac::BitsCompareOp,
-               ac::BitsSelectOp, ac::BitsConcatOp, ac::BitsExtractOp,
-               ac::BitsResizeOp, ac::StructGetOp>(op))
-        continue;
-      auto result = op->getResult(0);
-      if (!isa<ac::BitsType>(result.getType()))
-        continue;
-      std::optional<unsigned> selected;
-      if (node.readsSampleInput) {
-        if (node.inputs.empty() && !node.copyIndex && node.copies.size() == 1 &&
-            node.copies.front().destination.path.empty())
-          selected = findCone(node.copies.front().source);
-      } else {
-        for (unsigned input : node.inputs) {
-          if (plan.nodes[input].fixed)
-            continue;
-          auto parent = coneOfNode.find(input);
-          if (parent == coneOfNode.end() ||
-              (selected && *selected != parent->second)) {
-            selected.reset();
-            break;
-          }
-          selected = parent->second;
-        }
-      }
-      if (!selected)
-        continue;
-      auto size = width(result.getType(), id, op);
-      if (failed(size))
-        return failure();
-      if (*size > 64)
-        continue;
-      coneOfNode.try_emplace(index, *selected);
-      candidates[*selected].nodes.push_back(index);
-    }
-  }
-  if (candidates.empty())
-    return success();
-  auto best = llvm::max_element(candidates, [](const WorkCone &a,
-                                               const WorkCone &b) {
-    return a.nodes.size() < b.nodes.size();
-  });
-  if (best->nodes.size() < minConeOperations)
-    return success();
-
-  llvm::DenseSet<Net> escaping;
-  unsigned chosen = best - candidates.begin();
-  for (auto [index, node] : llvm::enumerate(plan.nodes)) {
-    auto owner = coneOfNode.find(index);
-    if (owner != coneOfNode.end() && owner->second == chosen)
-      continue;
-    for (unsigned input : node.inputs) {
-      auto source = coneOfNode.find(input);
-      if (source == coneOfNode.end() || source->second != chosen)
-        continue;
-      auto [id, op] = plan.nodes[input].site;
-      escaping.insert({id, op->getResult(0)});
-    }
-  }
-  // Persist only a small frontier relative to the calculation it replaces.
-  if (escaping.size() * 2 > best->nodes.size())
-    return success();
-  cone = std::move(*best);
-  coneNodes.insert(cone.nodes.begin(), cone.nodes.end());
-  coneSlots = std::move(escaping);
-  return success();
-}
-
-void Cpp::planForwardedResults() {
-  if (!inlineWork || plan.deferredWrites.empty())
-    return;
-  llvm::DenseMap<Net, unsigned> constructions;
-  SmallVector<unsigned> uses(plan.nodes.size());
-  for (auto [index, node] : llvm::enumerate(plan.nodes)) {
-    auto [owner, op] = node.site;
-    if (!node.fixed && isa<ac::StructCreateOp, ac::TableCreateOp>(op))
-      constructions.try_emplace(Net{owner, op->getResult(0)}, index);
-    for (unsigned input : node.inputs)
-      ++uses[input];
-  }
-  for (const auto &[index, write] : plan.deferredWrites) {
-    auto [owner, op] = plan.nodes[index].site;
-    auto proposal = plan.projection(write.value).net;
-    for (auto [result, operand] :
-         llvm::zip_equal(op->getResults(), write.outputs)) {
-      auto source = plan.projection(operand);
-      auto construction = constructions.find(source.net);
-      // Use the result's storage for its otherwise unobservable constructor.
-      // Root references and deferred proposals still need their own values.
-      if (source.path.empty() && construction != constructions.end() &&
-          uses[construction->second] == 1 && source.net != proposal &&
-          !plan.persistentSlots.contains(source.net) &&
-          !plan.methodSlots.contains(source.net))
-        forwardedResults.try_emplace(source.net, Net{owner, result});
-    }
-  }
-}
-
 std::string Cpp::slot(Net net) const {
   return projectedSlot(plan.projection(net));
 }
 
 std::string Cpp::projectedSlot(const ProjectedNet &access) const {
-  auto net = access.net;
-  if (auto result = forwardedResults.find(net); result != forwardedResults.end())
-    net = result->second;
+  const auto *source = &access;
+  for (;;) {
+    auto it = forwardedSlots.find(source->net);
+    if (it == forwardedSlots.end())
+      break;
+    assert(source->path.empty() && "only whole scalar slots can be forwarded");
+    source = &it->second;
+  }
+  auto net = source->net;
   std::string result;
   if (auto state = plan.storedNets.find(net); state != plan.storedNets.end())
     result = storage(state->second) + ".Q()";
+  else if (net == plan.reset)
+    result = "inactiveReset";
   else if (auto input = inputs.find(net.second);
            net.first == 0 && input != inputs.end())
     result = input->second;
   else
     result = numberName("slot_", plan.slotIds.find(net)->second);
-  for (auto selector : access.path)
+  for (auto selector : source->path)
     if (selector.kind == Projection::Field)
       result += numberName(".field_", selector.index);
     else
@@ -693,9 +575,13 @@ LogicalResult Cpp::emitNode(const Node &node, Expr &scope, unsigned indent) {
   }
   if (!node.copies.empty()) {
     for (const auto &copy : node.copies) {
+      if (forwardedSlots.contains(copy.destination.net))
+        continue;
       out << std::string(indent, ' ');
       if (borrowedSlots.contains(copy.destination.net))
         out << "[[maybe_unused]] const auto &";
+      else if (initializedSlots.contains(copy.destination.net))
+        out << "[[maybe_unused]] auto ";
       out << scope.base << projectedSlot(copy.destination) << " = " << scope.base
           << projectedSlot(copy.source) << ";\n";
     }
@@ -1081,8 +967,11 @@ LogicalResult Cpp::statement(Operation &op, Expr &scope, unsigned indent) {
       out << "[[maybe_unused]] inline static constexpr auto " << operand(value);
     else if (local(scope))
       out << "[[maybe_unused]] auto " << var(scope, value);
-    else
+    else {
+      if (initializedSlots.contains({id, value}))
+        out << "[[maybe_unused]] auto ";
       out << operand(value);
+    }
     out << " = " << expression << ";\n";
   };
   auto scalar = [&](const std::string &expression) {
@@ -1131,7 +1020,7 @@ LogicalResult Cpp::statement(Operation &op, Expr &scope, unsigned indent) {
                      .Default("");
     if (!token.empty())
       return scalar(arg(0) + token.str() + arg(1));
-    if (checksDivisor(binary)) {
+    if (opcode == "udiv" || opcode == "urem") {
       auto w = width(binary.getRhs().getType(), id, &op);
       if (failed(w))
         return failure();
@@ -1161,8 +1050,10 @@ LogicalResult Cpp::statement(Operation &op, Expr &scope, unsigned indent) {
                   "SignedLess(" + arg(reverse ? 1 : 0) + ", " +
                   arg(reverse ? 0 : 1) + ")}");
   }
-  if (isa<ac::BitsSelectOp>(op))
-    return scalar("mux(" + operands() + ")");
+  if (isa<ac::BitsSelectOp>(op)) {
+    auto onTrue = arg(1), onFalse = arg(2);
+    return scalar(onTrue == onFalse ? onTrue : "mux(" + operands() + ")");
+  }
   if (isa<ac::BitsConcatOp>(op))
     return scalar("concat(" + operands() + ")");
   if (isa<ac::BitsResizeOp, ac::BitsExtractOp>(op)) {
@@ -1442,6 +1333,11 @@ LogicalResult Cpp::statement(Operation &op, Expr &scope, unsigned indent) {
         failed(plan.hardware.verifyResolvedOperation(write, plan.bindings(id))))
       return failure();
     auto ordinal = plan.states.find({id, write.getStateAttr()})->second;
+    if (plan.resources[ordinal].wholeProposal) {
+      out << ws << "model." << storage(ordinal) << ".Propose("
+          << operand(write.getValue()) << ");\n";
+      return success();
+    }
     auto access = select(plan.resources[ordinal].type, write.getSelectors(), id,
                          &op, &scope, write.getIndices());
     if (failed(access))
@@ -1536,10 +1432,10 @@ LogicalResult Cpp::registration(ac::SourceMethodCallOp call, Expr &scope) {
   for (Value result : call.getResults())
     if (!plan.storedNets.contains({scope.owner, result}))
       out << "  " << ref(scope, result) << " = {};\n";
-  out << "  if (!reset";
+  out << "  if (";
   if (call.getPath())
-    out << " && " << ref(scope, call.getPath()) << ".toBool()";
-  out << " && " << receiver << function(method, true) << "(sample";
+    out << ref(scope, call.getPath()) << ".toBool() && ";
+  out << receiver << function(method, true) << "(sample";
   for (const auto &arg : guardArg)
     out << ", " << arg;
   out << ")) { // "
@@ -1571,126 +1467,25 @@ LogicalResult Cpp::registration(ac::SourceMethodCallOp call, Expr &scope) {
   return success();
 }
 
-LogicalResult Cpp::work(const WorkSegment &segment, StringRef qualifier,
-                        bool edge) {
+LogicalResult Cpp::work(const WorkSegment &segment, StringRef qualifier) {
   auto id = segment.instance;
   const auto &instance = plan.instances.at(id);
   Expr scope(id, qualifier);
   auto operations =
       ArrayRef(instance.work).slice(segment.begin, segment.end - segment.begin);
-  for (auto ordinal : operations) {
-    if (coneNodes.contains(ordinal) ||
-        (inlineWork && plan.edgeWork.contains(ordinal) != edge))
-      continue;
-    const auto &node = plan.nodes[ordinal];
-    unsigned indent = edge ? 6 : cacheWork ? 4 : 2;
-    auto deferred = plan.deferredWrites.find(ordinal);
-    if (auto call = dyn_cast<ac::SourceMethodCallOp>(node.site.second)) {
-      if (inlineWork && deferred != plan.deferredWrites.end()) {
-        for (auto [result, source] :
-             llvm::zip_equal(call.getResults(), deferred->second.outputs)) {
-          auto t = type(result.getType(), id, call);
-          if (failed(t))
-            return failure();
-          out << std::string(indent, ' ');
-          if (auto forwarded = forwardedResults.find(plan.projection(source).net);
-              forwarded != forwardedResults.end() &&
-              forwarded->second == Net{id, result})
-            out << "if (reset) " << ref(scope, result) << " = {};\n";
-          else
-            out << ref(scope, result) << " = reset ? " << *t << "{} : "
-                << slot(source) << ";\n";
-        }
-      } else if (failed(registration(call, scope))) {
-        return failure();
-      }
-    } else if (failed(emitNode(node, scope, indent))) {
-      return failure();
-    }
-  }
-  return success();
-}
-
-LogicalResult Cpp::sampleWork() {
-  if (cacheWork) {
-    out << "  if (!workValid || cachedReset != reset";
-    for (auto [index, value] : llvm::enumerate(cacheInputs))
-      out << "\n      || !SameValue(cached_" << index << ", "
-          << slot({0, value}) << ')';
-    out << ") {\n";
-    if (!cone.nodes.empty()) {
-      auto key = projectedSlot(cone.input);
-      out << "    if (!coneValid || !SameValue(coneInput, " << key << ")) {\n";
-      for (unsigned index : cone.nodes) {
-        const Node &node = plan.nodes[index];
-        Expr scope(node.site.first, "");
-        if (failed(emitNode(node, scope, 6)))
-          return failure();
-      }
-      out << "      coneInput = " << key << ";\n"
-          << "      coneValid = true;\n"
-          << "    }\n";
-    }
-  }
-  for (const auto &segment : plan.schedule) {
-    if (inlineWork) {
-      if (failed(work(segment, "")))
-        return failure();
-    } else {
-      out << "  module_" << segment.instance << '.'
-          << workName(plan.instances.at(segment.instance), segment.ordinal)
-          << "(sample, reset);\n";
-    }
-  }
-  if (cacheWork) {
-    for (auto [index, value] : llvm::enumerate(cacheInputs))
-      out << "    cached_" << index << " = " << slot({0, value}) << ";\n";
-    out << "    cachedReset = reset;\n"
-        << "    workValid = true;\n"
-        << "  }\n";
-  }
-  return success();
-}
-
-LogicalResult Cpp::xfer() {
-  if (!inlineWork || plan.deferredWrites.empty()) {
-    for (unsigned index = 0; index < plan.resources.size(); ++index)
-      out << "    " << storage(index) << ".Xfer(reset);\n";
+  if (operations.empty())
     return success();
-  }
-
-  out << "    if (!reset) {\n";
-  for (const auto &segment : plan.schedule)
-    if (failed(work(segment, "", /*edge=*/true)))
+  if (inlineWork)
+    out << "\n  // " << instance.path << '\n';
+  for (auto ordinal : operations) {
+    const auto &node = plan.nodes[ordinal];
+    if (auto call = dyn_cast<ac::SourceMethodCallOp>(node.site.second)) {
+      if (failed(registration(call, scope)))
+        return failure();
+    } else if (failed(emitNode(node, scope, 2))) {
       return failure();
-  SmallVector<const DeferredWrite *> writes(plan.resources.size());
-  for (const auto &entry : plan.deferredWrites)
-    writes[entry.second.resource] = &entry.second;
-  for (auto [index, write] : llvm::enumerate(writes)) {
-    if (!write)
-      continue;
-    // Hold a value copy when the source refers to Q, which another Xfer
-    // can replace before this State receives its value.
-    Net source = plan.projection(write->value).net;
-    bool snapshot = plan.resources.size() > 1 &&
-                    (plan.storedNets.contains(source) ||
-                     borrowedSlots.contains(source));
-    out << "      const auto " << (snapshot ? "" : "&") << "proposal_" << index
-        << " = " << slot(write->value) << ";\n";
+    }
   }
-  for (auto [index, write] : llvm::enumerate(writes)) {
-    out << "      " << storage(index);
-    if (write)
-      out << ".XferWhole(proposal_" << index << ");\n";
-    else
-      out << ".Xfer(false);\n";
-  }
-  out << "    } else {\n";
-  for (unsigned index = 0; index < plan.resources.size(); ++index)
-    out << "      " << storage(index) << ".Xfer(true);\n";
-  out << "    }\n";
-  if (cacheWork)
-    out << "    workValid = false;\n";
   return success();
 }
 
@@ -1703,29 +1498,78 @@ void Cpp::rootOutputBindings(const Instance &root) {
         << ')';
 }
 
-LogicalResult Cpp::emitModel(ArrayAttr samples) {
+LogicalResult Cpp::planProposalInputs() {
+  if (!plan.canReuseProposal())
+    return success();
+  // Keep the comparison smaller than a general aggregate walk.
+  unsigned words = 0;
+  constexpr unsigned maxWords = 8;
+  auto *root = plan.module(0);
+  auto add = [&](auto &&self, Type t, std::string access) -> FailureOr<bool> {
+    auto actual = plan.hardware.resolveType(t, plan.bindings(0), root);
+    if (failed(actual))
+      return failure();
+    if (isa<ac::BitsType>(*actual)) {
+      auto size = width(*actual, 0, root);
+      if (failed(size))
+        return failure();
+      if (*size > 64 * (maxWords - words))
+        return false;
+      words += llvm::divideCeil(*size, 64);
+      proposalInputTypes.push_back(bits(*size));
+      proposalInputValues.push_back(std::move(access));
+      return true;
+    }
+    auto record = dyn_cast<ac::StructType>(*actual);
+    if (!record)
+      return false;
+    for (auto [i, raw] :
+         llvm::enumerate(plan.hardware.lookupStruct(record).getFields())) {
+      Type member = cast<DictionaryAttr>(raw).getAs<TypeAttr>("type").getValue();
+      auto added = self(self, member, access + numberName(".field_", i));
+      if (failed(added) || !*added)
+        return added;
+    }
+    return true;
+  };
+  for (Net net : plan.instances.at(0).inputs) {
+    auto input = inputs.find(net.second);
+    if (input == inputs.end())
+      continue;
+    auto added = add(add, net.second.getType(), input->second);
+    if (failed(added))
+      return failure();
+    if (!*added)
+      return success();
+  }
+  reuseProposal = true;
+  return success();
+}
+
+LogicalResult Cpp::emitModel() {
   const auto &root = plan.instances.at(0);
   // Root input names denote the owning slots. Add their bindings before any
   // submodule is initialized so forwarded outputs can alias them directly.
   auto mod = root.info.definition;
   for (auto [index, net] : llvm::enumerate(root.inputs))
-    inputs.try_emplace(
-        net.second,
-        portName("in_", cast<StringAttr>(mod.getInputNames()[index])));
+    if (net != plan.clock && net != plan.reset)
+      inputs.try_emplace(
+          net.second,
+          portName("in_", cast<StringAttr>(mod.getInputNames()[index])));
+  if (failed(planProposalInputs()))
+    return failure();
 
   out << "class Model {\n";
   for (const auto &[id, instance] : plan.instances) {
-    if (!needsModule(id, instance))
+    if (!needsModule(instance))
       continue;
     out << "  struct Module_" << id << " { // " << instance.path << '\n';
     out << "    Model &model;\n";
     if (!inlineWork)
       for (unsigned ordinal = 0; ordinal < instance.workSegments; ++ordinal)
         out << "    void " << workName(instance, ordinal)
-            << "(Sample &sample, bool reset);\n";
+            << "(Sample &sample);\n";
     for (auto method : instance.methods) {
-      if (!needsMethod(id, method))
-        continue;
       for (bool guard : {true, false}) {
         auto sig = signature(method, id, guard);
         if (failed(sig))
@@ -1736,11 +1580,14 @@ LogicalResult Cpp::emitModel(ArrayAttr samples) {
     out << "  };\n";
   }
   out << "public:\n";
-  for (auto [index, net] : llvm::enumerate(root.inputs))
-    out << "  " << *type(net.second.getType(), 0, mod) << ' '
-        << inputs.find(net.second)->second << "{};\n";
+  for (Net net : root.inputs)
+    if (auto input = inputs.find(net.second); input != inputs.end())
+      out << "  " << *type(net.second.getType(), 0, mod) << ' '
+          << input->second << "{};\n";
 
   out << "private:\n";
+  if (plan.reset.second)
+    out << "  inline static constexpr Bits<1> inactiveReset{};\n";
   for (unsigned index : plan.fixed) {
     const Node &node = plan.nodes[index];
     auto [id, op] = node.site;
@@ -1753,9 +1600,10 @@ LogicalResult Cpp::emitModel(ArrayAttr samples) {
       return failure();
   }
   for (auto [index, net] : llvm::enumerate(plan.slots)) {
-    if ((net.first == 0 && inputs.contains(net.second)) ||
+    if (net == plan.clock || net == plan.reset ||
+        (net.first == 0 && inputs.contains(net.second)) ||
         localSlots.contains(net) || borrowedSlots.contains(net) ||
-        forwardedResults.contains(net) || constantSlots.contains(net))
+        forwardedSlots.contains(net) || constantSlots.contains(net))
       continue;
     out << "  "
         << *type(net.second.getType(), net.first, plan.module(net.first))
@@ -1763,6 +1611,11 @@ LogicalResult Cpp::emitModel(ArrayAttr samples) {
   }
   for (auto [index, resource] : llvm::enumerate(plan.resources)) {
     auto t = *type(resource.type, resource.owner, plan.module(resource.owner));
+    if (resource.wholeProposal) {
+      out << "  WholeState<" << t << "> " << storage(index)
+          << "; // " << resource.name << '\n';
+      continue;
+    }
     out << "  " << (resource.kind == Resource::Queue ? "Queue" : "State") << '<'
         << t << "> " << storage(index) << '{' << quote(resource.name);
     if (resource.kind == Resource::Queue)
@@ -1770,20 +1623,19 @@ LogicalResult Cpp::emitModel(ArrayAttr samples) {
     out << "};\n";
   }
   for (const auto &[id, instance] : plan.instances)
-    if (needsModule(id, instance))
+    if (needsModule(instance))
       out << "  Module_" << id << " module_" << id << "{*this};\n";
   out << "  std::string initializationError;\n"
-      << "  bool previousClock = false;\n";
-  if (cacheWork) {
-    out << "  bool workValid = false;\n"
-        << "  bool cachedReset = false;\n";
-    for (auto [index, value] : llvm::enumerate(cacheInputs))
-      out << "  decltype(" << slot({0, value}) << ") cached_" << index
-          << "{};\n";
-    if (!cone.nodes.empty())
-      out << "  bool coneValid = false;\n"
-          << "  std::remove_cvref_t<decltype((" << projectedSlot(cone.input)
-          << "))> coneInput{};\n";
+      << "  std::vector<Observation> pendingObservations;\n"
+      << "  std::uint64_t cycle_ = 0;\n"
+      << "  bool proposalReady = false;\n"
+      << "  void DiscardWork();\n";
+  if (reuseProposal) {
+    out << "  using ProposalInputs = std::tuple<" << join(proposalInputTypes)
+        << ">;\n"
+        << "  ProposalInputs proposalInputs;\n"
+        << "  ProposalInputs CaptureProposalInputs() const {\n"
+        << "    return {" << join(proposalInputValues) << "};\n  }\n";
   }
   out << "public:\n";
   for (auto [index, net] : llvm::enumerate(root.outputs))
@@ -1813,17 +1665,11 @@ LogicalResult Cpp::emitModel(ArrayAttr samples) {
       << "  }\n"
       << "  Model(const Model &) = delete;\n"
       << "  Model &operator=(const Model &) = delete;\n"
-      << "  bool Step();\n";
-  if (!samples.empty()) {
-    out << "  bool Run() {\n    for (auto row : {";
-    SmallVector<std::string> clocks;
-    for (Attribute raw : samples)
-      clocks.push_back(quote(cast<StringAttr>(raw).getValue()));
-    out << join(clocks) << "}) {\n"
-        << "      " << slot(plan.clock) << " = Bits<1>{row[0] == '1'};\n"
-        << "      " << slot(plan.reset) << " = Bits<1>{row[1] == '1'};\n"
-        << "      if (!Step()) return false;\n    }\n    return true;\n  }\n";
-  }
+      << "  bool Work();\n"
+      << "  bool Xfer();\n"
+      << "  bool Step() { return Work() && Xfer(); }\n"
+      << "  void Reset();\n"
+      << "  std::uint64_t cycle() const { return cycle_; }\n";
   out << "};\n";
   return success();
 }
@@ -1832,22 +1678,16 @@ LogicalResult Cpp::emit() {
   auto samples = ac::getSystemSamples(plan.module(0));
   if (failed(samples))
     return failure();
-  for (auto raw : *samples)
-    if (cast<StringAttr>(raw).getValue().find_first_of("xz") != StringRef::npos)
-      return plan.module(0)->emitOpError()
-             << "X/Z System samples are unsupported";
-  if (!samples->empty() && (!plan.clock.second || !plan.reset.second))
+  if (!samples->empty())
     return plan.module(0)->emitOpError()
-           << "System samples require root clock and reset";
+           << "physical System samples are unsupported in t-gfsim";
 
   out << "#pragma once\n#include \"gfsim/t_gfsim.h\"\n#include <tuple>\n\n"
       << "namespace gfsim::t_gfsim {\n";
-  if (failed(planTypes()) || failed(emitModel(*samples)))
+  if (failed(planTypes()) || failed(emitModel()))
     return failure();
   for (const auto &[id, instance] : plan.instances) {
     for (auto method : instance.methods) {
-      if (!needsMethod(id, method))
-        continue;
       for (bool guard : {true, false}) {
         Expr scope(id, "model.");
         auto sig = signature(method, id, guard, &scope);
@@ -1877,47 +1717,76 @@ LogicalResult Cpp::emit() {
     for (const auto &segment : plan.schedule) {
       out << "inline void Model::Module_" << segment.instance << "::"
           << workName(plan.instances.at(segment.instance), segment.ordinal)
-          << "([[maybe_unused]] Sample &sample, [[maybe_unused]] "
-             "bool reset) {\n";
+          << "([[maybe_unused]] Sample &sample) {\n";
       if (failed(work(segment, "model.")))
         return failure();
       out << "}\n";
     }
-  bool pureWork = inlineWork && plan.pureWork;
-  out << "\ninline bool Model::Step() {\n";
-  if (!pureWork)
-    out << "  Sample sample;\n";
-  out << "  if (!initializationError.empty()) { error = initializationError; "
+
+  out << "\ninline void Model::DiscardWork() {\n";
+  for (unsigned index = 0; index < plan.resources.size(); ++index)
+    out << "  " << storage(index) << ".Discard();\n";
+  out << "  pendingObservations.clear();\n"
+      << "  proposalReady = false;\n"
+      << "}\n"
+      << "\ninline bool Model::Work() {\n";
+  if (reuseProposal)
+    out << "  const auto inputs = CaptureProposalInputs();\n"
+        << "  if (proposalReady && inputs == proposalInputs) {\n"
+        << "    error.clear();\n"
+        << "    return true;\n"
+        << "  }\n";
+  out << "  if (proposalReady) DiscardWork();\n"
+      << "  if (!initializationError.empty()) { error = initializationError; "
          "return false; }\n"
-      << "  [[maybe_unused]] const bool reset = "
-      << (plan.reset.second ? slot(plan.reset) + ".toBool()" : "false") << ";\n"
-      << "  const bool clock = "
-      << (plan.clock.second ? slot(plan.clock) + ".toBool()" : "true") << ";\n";
+      << "  Sample sample;\n";
   for (auto [index, net] : llvm::enumerate(plan.slots))
-    if (localSlots.contains(net))
+    if (localSlots.contains(net) && !initializedSlots.contains(net))
       out << "  [[maybe_unused]] "
           << *type(net.second.getType(), net.first, plan.module(net.first))
           << " slot_" << index << "{};\n";
-  if (failed(sampleWork()))
-    return failure();
-  if (!pureWork)
-    out << "  error = std::move(sample.error);\n";
-  out << "  if (" << (pureWork ? "" : "error.empty() && ")
-      << "clock && !previousClock) {\n";
-  if (failed(xfer()))
-    return failure();
-  if (!pureWork) {
-    out << "  } else {\n";
-    for (unsigned index = 0; index < plan.resources.size(); ++index)
-      out << "    " << storage(index) << ".Discard();\n";
+  for (const auto &segment : plan.schedule) {
+    if (inlineWork) {
+      if (failed(work(segment, "")))
+        return failure();
+    } else {
+      out << "  module_" << segment.instance << '.'
+          << workName(plan.instances.at(segment.instance), segment.ordinal)
+          << "(sample);\n";
+    }
   }
-  out << "  }\n";
-  out << (pureWork ? "  error.clear();\n"
-                   : "  if (!error.empty()) return false;\n")
-      << "  previousClock = clock;\n"
-      << (pureWork ? "  observations.clear();\n"
-                   : "  observations = std::move(sample.observations);\n")
-      << "  return true;\n}\n"
+  out << "\n  error = std::move(sample.error);\n"
+      << "  if (!error.empty()) {\n"
+      << "    DiscardWork();\n"
+      << "    return false;\n"
+      << "  }\n";
+  for (auto [index, resource] : llvm::enumerate(plan.resources))
+    if (resource.kind == Resource::Queue)
+      out << "  " << storage(index) << ".FinishWork();\n";
+  out << "  pendingObservations = std::move(sample.observations);\n";
+  if (reuseProposal)
+    out << "  proposalInputs = inputs;\n";
+  out << "  proposalReady = true;\n"
+      << "  return true;\n"
+      << "}\n"
+      << "\ninline bool Model::Xfer() {\n"
+      << "  if (!proposalReady) return false;\n";
+  for (unsigned index = 0; index < plan.resources.size(); ++index)
+    out << "  " << storage(index) << ".Xfer();\n";
+  out << "  observations = std::move(pendingObservations);\n"
+      << "  proposalReady = false;\n"
+      << "  ++cycle_;\n"
+      << "  return true;\n"
+      << "}\n"
+      << "\ninline void Model::Reset() {\n";
+  for (unsigned index = 0; index < plan.resources.size(); ++index)
+    out << "  " << storage(index) << ".Reset();\n";
+  out << "  pendingObservations.clear();\n"
+      << "  observations.clear();\n"
+      << "  error.clear();\n"
+      << "  proposalReady = false;\n"
+      << "  cycle_ = 0;\n"
+      << "}\n"
       << "} // namespace gfsim::t_gfsim\n";
   return success();
 }

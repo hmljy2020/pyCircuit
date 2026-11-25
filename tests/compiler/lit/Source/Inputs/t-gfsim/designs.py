@@ -213,6 +213,7 @@ def ConflictingPops(
 
     @ac.rule
     def check() -> None:
+        ac.report("issue", issue)
         assert healthy == 1, "injected check failure"
 
     return first, second, count, snapshot

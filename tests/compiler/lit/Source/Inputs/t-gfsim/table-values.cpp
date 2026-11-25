@@ -24,7 +24,8 @@ int main() {
   model.in_column_index = Bits<70>{2};
   model.in_lookup = Bits<70>{3};
   model.in_update = Bits<1>{1};
-  assert(model.Step());
+  assert(model.Work());
+  assert(model.cycle() == 0);
 
   expect(model.out_replicated, {4, 9, 4, 4, 9, 4});
   expect(model.out_transposed, {1, 4, 2, 5, 3, 6});
@@ -44,13 +45,20 @@ int main() {
   expect(model.out_row, {9, 9, 9});
   assert(model.out_mode.value() == 3 && model.out_enable.toBool());
 
+  assert(model.Xfer());
+  assert(model.cycle() == 1);
+  assert(!model.Xfer());
+
   // Leave the low word unchanged. Any narrowing before the bounds check
   // would select the same row or payload as the first step.
   model.in_row_index = Bits<70>{1, 2};
   model.in_lookup = Bits<70>{3, 2};
   model.in_threshold = Bits<8>{7};
   model.in_update = Bits<1>{0};
-  assert(model.Step());
+  assert(model.Work());
+  assert(model.Work());
+  assert(model.Xfer());
+  assert(model.cycle() == 2);
   assert(model.out_coordinate.value() == 6);
   assert(!model.out_valid.toBool() && model.out_selected.value() == 9);
   assert(model.out_checked.value() == 9);

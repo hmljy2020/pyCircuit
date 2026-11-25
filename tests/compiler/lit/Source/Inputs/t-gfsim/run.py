@@ -161,6 +161,14 @@ def main():
     }
     inferred = [(link(name, unit), case) for name, (unit, case) in scenarios.items()]
     checked_queue = link("CheckedQueueAdd", queue, bench)
+    sampled_source = scratch / "sampledbench.py"
+    sampled_source.write_text(
+        (fixtures / "bench.py").read_text().replace(
+            "@ac.system", "@ac.system(samples=((0, 0), (1, 0)))"
+        ).replace("def CheckedQueueAdd", "def SampledQueueAdd")
+    )
+    sampled_bench = compile_unit(sampled_source, [queue])
+    sampled_system = link("SampledQueueAdd", queue, sampled_bench)
     raw_bound = link("RawBound", design)
     raw_read = link("RawRead", design)
     interleaved = link("Interleaved", design)
@@ -183,6 +191,13 @@ def main():
         return infer(name, package)
 
     collection_model = collection("CollectionFamily", family)
+    clock_data = collection(
+        "ClockAsData",
+        family.replace("(%family, %index)", "(%family, %clock)").replace(
+            "-> !family_row\n",
+            '-> !family_row loc("clock-as-data.py":7:3)\n',
+        ),
+    )
     collection_cycle = collection(
         "CollectionCycle",
         family.replace("%feedback, %first", "%feedback, %feedback"),
@@ -213,10 +228,18 @@ def main():
     execute(interleaved, "INTERLEAVED")
     execute(collection_model, "COLLECTION_FAMILY")
     execute(checked_queue, "CHECKED_QUEUE_ADD")
+    reject_emission(
+        sampled_system,
+        "physical System samples are unsupported in t-gfsim",
+        "sampledbench.py",
+    )
+    reject_emission(
+        clock_data, "t-gfsim cannot use the root clock as data", "clock-as-data.py"
+    )
     reject_emission(raw_bound, "_wired", "in_valid", "designs.py")
     reject_emission(raw_read, "inspected", "valid", "designs.py")
-    reject_emission(cycle, "cyclic same-sample value dependence")
-    reject_emission(collection_cycle, "cyclic same-sample value dependence")
+    reject_emission(cycle, "cyclic same-cycle value dependence")
+    reject_emission(collection_cycle, "cyclic same-cycle value dependence")
     reject_emission(unknown, "X/Z", "designs.py")
 
 

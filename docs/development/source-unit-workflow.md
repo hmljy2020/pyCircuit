@@ -674,62 +674,54 @@ c++ -std=c++20 -I "$PYC_TOOLCHAIN_ROOT/include" -I .pycircuit_out \
   simulate.cpp -o .pycircuit_out/simulate
 ```
 
-Instantiate `gfsim::t_gfsim::Model`, drive its typed `in_<name>` values,
-call `Step()`, and read the `out_<name>` references. Use the emitted header for
-the concrete names and types. Clocked models expose the selected root clock
-and reset, typically `in_pyc_clk` and `in_pyc_rst`. A successful step records
-the sampled clock level. Drive low then high to commit another rising edge.
-A System with explicit two-state sample rows also has `Run()` to replay them.
+Instantiate `gfsim::t_gfsim::Model` and drive its typed `in_<name>` inputs.
+Call `Step()` to evaluate and commit one cycle, or use the two phases
+directly when the host needs to inspect outputs before committing:
 
-Construction binds every endpoint to its typed value. Forwarding and fanout
-share the producing slot. Each `Step()` runs a static Work schedule derived
-from same-sample reads. When whole instances cannot be ordered, the emitter
-follows operation dependencies across instance boundaries. It emits bounded
-Work schedules in `Step()` and uses local temporaries for values whose lifetime
-ends in the sample. Local aggregate projections can reference committed
-storage directly while that storage is stable. Larger schedules and those made
-only of sample effects retain separate functions for Work segments. A
-registered Rule runs its guard and body
-on the selected Method receiver. Nested calls share the enclosing Rule's
-transaction. Each independent Rule reads the committed State and Queue snapshot.
-A later read inside the same transaction can see its own State writes.
+- `Work()` evaluates the static dependency schedule against committed State
+  and Queue contents. After success, read `out_<name>` to inspect the current
+  evaluation. Repeating Work replaces the previous proposal using the
+  latest inputs, without advancing the cycle.
+- `Xfer()` commits the last successful Work, publishes its observations,
+  and increments `cycle()`. With no valid proposal it returns `false`
+  without changing anything. It does not evaluate wires or Rules.
+- `Reset()` discards pending Work, restores declared initial State and
+  held results, clears Queues and observations, and resets `cycle()` to
+  zero. It does not run Work.
 
-An unconditional whole-State write can move to the Xfer barrier when the
-emitter proves that its Rule is the only writer, has no other effect, and can
-forward its results independently of the write. In this case, the dependencies
-used exclusively by the write run on successful non-reset rising edges. The
-emitter can build an aggregate directly in its forwarded result's storage
-when the result is its only consumer. It can reuse sufficiently large,
-effect-free Work schedules while their
-typed inputs, reset sample and committed-resource snapshot are unchanged. Xfer
-invalidates the cached Work and its inputs to the deferred calculations.
-For those schedules, the emitter also makes private single-word literals and
-their fixed extracts and resizes C++ constants. Public output slots keep
-their per-Model storage.
-Work can reuse the values leaving a large group of scalar wires whose
-dependencies come from one input or committed field. Each use checks that
-field's value, including after a commit or reset.
+Work failures return `false` with `model.error`. They discard the proposal
+and leave committed State, Queues, the cycle count, and published observations
+unchanged. If the host changes an input after successful Work, it must repeat
+Work to include the change in the next commit.
 
-A successful non-reset rising edge commits State writes, Queue operations,
-and held results after sample Work and all checks. Conflicts and failed
-source assertions return `false` with `model.error`, discard all proposals,
-and preserve the last successful clock sample and observations. Assert and
-observation paths run when their enclosing Rule executes in Work. A successful
-reset edge restores State initial values, clears Queues, and resets held
-results. Reset suppresses Rule execution. Plain combinational Work still runs.
+The generated model absorbs the compiler's physical clock and reset ports.
+Work runs with reset inactive. A clock used as data or a System with a
+physical sampling sequence is rejected with a source diagnostic. These
+restrictions apply only to t-gfsim.
+
+Work follows the static linked-ACIR dependency order, including values crossing
+instance boundaries. The header groups inline computation by instance and
+keeps separate Work functions for larger or effect-only schedules. A registered
+Rule runs its guard and body on the selected Method receiver. Nested calls share
+the enclosing Rule's transaction. An independent Rule sees committed values,
+and a later read in the same transaction can see its own State writes.
+
+When linked analysis proves one unconditional whole-value writer and no
+transactional candidate reads, Work can stage a single owned next value
+instead of merging proposals. Eligible models with a small typed input
+interface can reuse a successful pending proposal for exactly equal inputs.
+Models with Queue actions, observations, or runtime checks continue to
+evaluate every Work call. Commit, failure, and reset invalidate reuse.
 
 A conditional registered Rule result starts at typed zero and holds its last
 committed value. A direct output reference to Q or a held result reflects Xfer
-immediately. Logic that consumes that slot in Work sees the new value on the
-next sample. Always-admitted Rule results propagate in the same Work sample
-and use typed zero during reset. A System that checks a QueueAdd result from
-the first non-reset sample must account for the initial zero and wait until a
-sum has committed.
+immediately. Logic that consumes that slot sees the new value on the next Work.
+Always-admitted Rule results propagate during Work.
 
 Queue `push` requires a free committed slot. `pop` and `peek` require a
-committed, mature head. There is no same-edge replacement credit for a full
-Queue or bypass through an empty Queue. Successful rising edges advance
-Queue latency even when no Rule fires. Raw Queue input bindings and live raw
+committed, mature head. There is no same-cycle replacement credit for a full
+Queue or bypass through an empty Queue. A successful Xfer advances Queue
+latency once even when no Rule fires. Raw Queue input bindings and live raw
 output reads produce source diagnostics. Method-mode placeholders and unused
 captures can remain in the inferred IR.
 
@@ -759,16 +751,17 @@ can be scheduled when its actual dependencies are acyclic. Whole-value
 consumers wait for the relevant aggregate to be assembled.
 
 The RV32I verification directory includes a t-gfsim driver for the existing
-`smoke` and `held_wb_store_data` programs. Prepare those cases with
+`smoke`, `held_wb_store_data`, and `c-array` programs. Prepare those cases with
 `designs/rv32i_core/verification/prepare.py` and the pinned Spike build.
 Pass the resulting program directory and the linked-source model header to
 `designs/rv32i_core/verification/run_transactional.py`. The driver uses
-the existing memory environment and compares retirement, architectural
-state and memory effects with the independent reference.
+the existing memory environment. It repeats Work as memory feedback settles,
+then commits the final response once per cycle. The runner compares retirement,
+architectural state, and memory effects with the independent Spike reference.
 
 The emitter rejects X/Z, general transactions, writable Method formals,
-unsupported primitives, and same-sample value dependency cycles. Division
-by zero fails the sample. The ordinary dual-target flow uses `pycircuit link`
+unsupported primitives, and same-cycle value dependency cycles. Division
+by zero fails Work. The ordinary dual-target flow uses `pycircuit link`
 with the original source units and emits C++ or Verilog from verified final
 hardware.
 

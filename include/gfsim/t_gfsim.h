@@ -84,17 +84,16 @@ public:
     ranges_.push_back({txn.id, low, high});
   }
 
-  void Xfer(bool reset) noexcept {
-    if (reset)
-      committed_ = initial_;
-    else if (!ranges_.empty())
+  void Xfer() noexcept {
+    if (!ranges_.empty())
       committed_ = merged_;
     Discard();
   }
 
-  // The emitter can prove a whole write is the sole proposal to this State.
-  // Its value is available only at the successful, non-reset Xfer barrier.
-  void XferWhole(const T &value) noexcept { committed_ = value; }
+  void Reset() noexcept {
+    committed_ = initial_;
+    Discard();
+  }
 
   void Discard() noexcept {
     ranges_.clear();
@@ -110,31 +109,67 @@ private:
   std::vector<WriteRange> ranges_;
 };
 
+// Storage for a compiler-proven single whole-value writer. Work takes
+// an owned snapshot and Xfer only installs it.
+template <class T> class WholeState {
+public:
+  const T &Q() const { return committed_; }
+
+  void Initialize(const T &initial) { committed_ = initial_ = initial; }
+
+  void Propose(const T &value) {
+    pending_ = value;
+    ready_ = true;
+  }
+
+  void Xfer() noexcept {
+    if (ready_)
+      committed_ = pending_;
+    Discard();
+  }
+
+  void Reset() noexcept {
+    committed_ = initial_;
+    Discard();
+  }
+
+  void Discard() noexcept { ready_ = false; }
+
+private:
+  T initial_{}, committed_{}, pending_{};
+  bool ready_ = false;
+};
+
 template <class T> class Queue {
   struct Entry {
     T value{};
     std::uint64_t deadline = 0;
   };
 
+  struct Cursor {
+    std::uint64_t tick = 0;
+    std::size_t read = 0, write = 0, immature = 0, count = 0, ready = 0;
+  };
+
 public:
   Queue(std::string_view name, std::size_t depth, std::uint64_t latency)
       : name_(name), entries_(depth), latency_(latency) {}
 
-  bool CanPush() const { return count_ < entries_.size(); }
-  bool CanPop() const { return ready_ != 0; }
+  bool CanPush() const { return committed_.count < entries_.size(); }
+  bool CanPop() const { return committed_.ready != 0; }
 
   void Push(Transaction &txn, T value) {
     if (!CanPush() || push_) {
       txn.sample.Fail("conflicting Queue push for " + std::string(name_));
       return;
     }
-    pending_ = value;
+    pending_.value = value;
     push_ = true;
   }
 
   T Peek(Transaction &txn) const {
     if (CanPop())
-      return entries_[read_].value;
+      return entries_[committed_.read].value;
     txn.sample.Fail("unavailable Queue head for " + std::string(name_));
     return {};
   }
@@ -145,34 +180,42 @@ public:
       return {};
     }
     pop_ = true;
-    return entries_[read_].value;
+    return entries_[committed_.read].value;
   }
 
-  void Xfer(bool reset) noexcept {
-    if (reset) {
-      read_ = write_ = immature_ = count_ = ready_ = 0;
-      tick_ = 0;
-    } else {
-      ++tick_;
-      if (ready_ < count_ && entries_[immature_].deadline == tick_) {
-        advance(immature_);
-        ++ready_;
-      }
-      if (pop_) {
-        advance(read_);
-        --ready_;
-        --count_;
-      }
-      if (push_) {
-        entries_[write_] = {pending_, tick_ + (latency_ - 1)};
-        advance(write_);
-        ++count_;
-        if (latency_ == 1) {
-          advance(immature_);
-          ++ready_;
-        }
+  void FinishWork() noexcept {
+    next_ = committed_;
+    ++next_.tick;
+    if (next_.ready < next_.count &&
+        entries_[next_.immature].deadline == next_.tick) {
+      advance(next_.immature);
+      ++next_.ready;
+    }
+    if (pop_) {
+      advance(next_.read);
+      --next_.ready;
+      --next_.count;
+    }
+    if (push_) {
+      pending_.deadline = next_.tick + (latency_ - 1);
+      advance(next_.write);
+      ++next_.count;
+      if (latency_ == 1) {
+        advance(next_.immature);
+        ++next_.ready;
       }
     }
+  }
+
+  void Xfer() noexcept {
+    if (push_)
+      entries_[committed_.write] = pending_;
+    committed_ = next_;
+    Discard();
+  }
+
+  void Reset() noexcept {
+    committed_ = {};
     Discard();
   }
 
@@ -187,9 +230,8 @@ private:
   std::string_view name_;
   std::vector<Entry> entries_;
   std::uint64_t latency_;
-  std::uint64_t tick_ = 0;
-  std::size_t read_ = 0, write_ = 0, immature_ = 0, count_ = 0, ready_ = 0;
-  T pending_{};
+  Cursor committed_{}, next_{};
+  Entry pending_{};
   bool push_ = false, pop_ = false;
 };
 
@@ -207,20 +249,6 @@ bool IndexInRange(const Bits<Width> &index, std::uint64_t extent) {
     if (index.word(word) != 0)
       return false;
   return index.value() < extent;
-}
-
-template <unsigned Width>
-bool SameValue(const Bits<Width> &lhs, const Bits<Width> &rhs) {
-  return lhs == rhs;
-}
-
-template <class T, std::size_t... Extents>
-bool SameValue(const table<T, Extents...> &lhs,
-               const table<T, Extents...> &rhs) {
-  for (std::size_t i = 0; i < lhs.size; ++i)
-    if (!SameValue(lhs[i], rhs[i]))
-      return false;
-  return true;
 }
 
 template <class Result, class Table>

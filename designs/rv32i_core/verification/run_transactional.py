@@ -5,6 +5,7 @@ import argparse
 from collections import defaultdict
 import json
 from pathlib import Path
+import time
 
 from run_generated import execute, invoke
 from verify import compare
@@ -84,18 +85,29 @@ def main():
         ],
         args.output / "build.log",
     )
-    for case, latency in (("smoke", [0]), ("held_wb_store_data", [2])):
+    for case, latency in (
+        ("smoke", [0]),
+        ("held_wb_store_data", [2]),
+        ("c-array", [0]),
+    ):
         program = args.programs / case
         config = json.loads((program / "simulation.json").read_text())
         config["image"] = str((program / config["image"]).resolve())
         config["data_latency"] = latency
         result = args.output / case
+        started = time.monotonic()
         execute([str(executable)], ports, config, result)
+        elapsed = time.monotonic() - started
         report = compare(program, result, ports_path)
         if case == "smoke":
             assert report["load_use_cycles"] == 1
-        else:
+        elif case == "held_wb_store_data":
             assert report["memory_wait_cycles"] >= 2
+        execution = json.loads((result / "execution.json").read_text())
+        report.update(
+            elapsed_seconds=elapsed,
+            cycles_per_second=execution["model_cycles"] / elapsed,
+        )
         (result / "verification.json").write_text(json.dumps(report, indent=2) + "\n")
         print(case, report, flush=True)
 

@@ -17,13 +17,6 @@ bool isWire(Operation *op) {
   return ac::detail::isCombinationalHardwareOperation(op);
 }
 
-bool checksDivisionInWork(Operation *op) {
-  return op->walk([](ac::BitsBinaryOp binary) {
-    return checksDivisor(binary) ? WalkResult::interrupt()
-                                 : WalkResult::advance();
-  }).wasInterrupted();
-}
-
 void collectWrittenSlots(const Node &node, llvm::DenseSet<Net> &slots) {
   if (!node.copies.empty()) {
     for (const auto &copy : node.copies)
@@ -187,8 +180,9 @@ LogicalResult Plan::build() {
       return module(resource.owner)->emitOpError()
              << "t-gfsim requires a static reset value for " << resource.name;
   }
+  planWholeStateWrites();
   scheduleWork();
-  return deferWholeWrites();
+  return success();
 }
 
 ProjectedNet Plan::projection(Net net) const {
@@ -535,14 +529,12 @@ LogicalResult Plan::requireResolved(ProjectedNet access,
                                     Operation *use) {
   auto net = access.net;
   auto [owner, value] = net;
+  if (net == clock)
+    return use->emitOpError() << "t-gfsim cannot use the root clock as data";
   if (storedNets.contains(net) ||
       (isa<BlockArgument>(value) && !tableInputs.contains(net))) {
-    if (!owner && isa<BlockArgument>(value))
-      workInputs.insert(value);
-    if (consumer) {
+    if (consumer)
       nodes[*consumer].fixed = false;
-      nodes[*consumer].readsSampleInput = true;
-    }
     return success();
   }
   auto *producer = value.getDefiningOp();
@@ -575,8 +567,6 @@ LogicalResult Plan::requireResolved(ProjectedNet access,
   }
   if (consumer)
     nodes[*consumer].inputs.push_back(dependency);
-  else
-    sampleRoots.push_back(dependency);
   return success();
 }
 
@@ -654,7 +644,7 @@ LogicalResult Plan::captureDependencies(InstanceId receiver, Value argument,
     auto resolved = resolve(std::move(source), use, true);
     if (failed(resolved) || failed(requireResolved(*resolved, consumer, use)))
       return failure();
-    captureUsers.emplace_back(resolved->net, consumer);
+    methodSlots.insert(resolved->net);
     if (projection)
       captureProjections.try_emplace({receiver, projection}, *resolved);
     return success();
@@ -690,7 +680,6 @@ LogicalResult Plan::callDependencies(Site site, unsigned consumer,
                              << "unsupported t-gfsim Method terminal";
   if (!visited.insert({bound.receiver, method}).second)
     return success();
-  methodUsers.emplace_back(Site{bound.receiver, method}, consumer);
 
   if (method->hasAttr("ac.formal_proposals"))
     return method.emitOpError()
@@ -712,13 +701,6 @@ LogicalResult Plan::callDependencies(Site site, unsigned consumer,
                                     consumer, site.second))))
       return failure();
   }
-  // Use lexical order for deterministic collection and diagnostics.
-  method.getBody().walk([&](ac::SourceStateWriteOp write) {
-    auto state = states.find({bound.receiver, write.getStateAttr()})->second;
-    auto &writer = stateWriters.try_emplace(state, consumer).first->second;
-    if (writer != consumer)
-      writer.reset();
-  });
   auto walk = method.getBody().walk([&](ac::SourceMethodCallOp nested) {
     return failed(callDependencies({bound.receiver, nested}, consumer, visited))
                ? WalkResult::interrupt()
@@ -740,7 +722,7 @@ Plan::activateIndexedProjection(const ProjectedNet &access) {
     if (path != access.path)
       continue;
     if (!nodes[index].available)
-      return op->emitOpError() << "cyclic same-sample value dependence";
+      return op->emitOpError() << "cyclic same-cycle value dependence";
     return std::optional{index};
   }
 
@@ -798,7 +780,7 @@ LogicalResult Plan::activateResult(Net net) {
   auto index = position->second;
   if (!fresh) {
     if (!nodes[index].available)
-      return site->emitOpError() << "cyclic same-sample value dependence";
+      return site->emitOpError() << "cyclic same-cycle value dependence";
     return success();
   }
   nodes.push_back({{owner, site}, {}, true, false, result, {}});
@@ -852,7 +834,7 @@ LogicalResult Plan::activate(Site site) {
   auto index = position->second;
   if (!fresh) {
     if (!nodes[index].available)
-      return op->emitOpError() << "cyclic same-sample value dependence";
+      return op->emitOpError() << "cyclic same-cycle value dependence";
     return success();
   }
   nodes.push_back({site, {}, isWire(op), false, {}, {}});
@@ -918,6 +900,100 @@ void Plan::complete(unsigned index) {
   work.push_back(index);
 }
 
+void Plan::planWholeStateWrites() {
+  // targets is keyed by lexical owner and operation, so every resolved call
+  // site counts, even when dependency analysis visits a Method only once.
+  llvm::DenseMap<Site, ac::SourceMethodCallOp> uniqueCalls;
+  for (const auto &[site, bound] : targets) {
+    if (!bound.method)
+      continue;
+    auto [entry, first] = uniqueCalls.try_emplace(
+        Site{bound.receiver, bound.method}, cast<ac::SourceMethodCallOp>(site.second));
+    if (!first)
+      entry->second = {};
+  }
+
+  struct Uses {
+    unsigned writes = 0;
+    bool readsCandidate = false;
+    bool wholeWriter = false;
+  };
+  SmallVector<Uses> uses(resources.size());
+  for (const auto &[id, instance] : instances) {
+    auto state = [&](StringAttr name) -> Uses & {
+      return uses[states.find({id, name})->second];
+    };
+    for (auto method : instance.methods) {
+      ac::SourceStateWriteOp soleWrite;
+      unsigned writes = 0;
+      method.getBody().walk([&](Operation *op) {
+        if (auto read = dyn_cast<ac::SourceStateReadOp>(op))
+          state(read.getStateAttr()).readsCandidate = true;
+        if (auto write = dyn_cast<ac::SourceStateWriteOp>(op)) {
+          ++state(write.getStateAttr()).writes;
+          ++writes;
+          soleWrite = write;
+        }
+      });
+      if (writes != 1 || soleWrite->getBlock() != &method.getBody().front() ||
+          !soleWrite.getSelectors().empty() || !soleWrite.getIndices().empty() ||
+          !ac::isSourceLiteralTrue(soleWrite.getPath()))
+        continue;
+      auto call = uniqueCalls.lookup({id, method});
+      if (call && isa<ac::ModuleOp>(call->getParentOp()) &&
+          call->hasAttr("ac.registration_name") &&
+          (!call.getPath() || ac::isSourceLiteralTrue(call.getPath())) &&
+          total(Target{id, method, {}, ac::NativeQueueAction::None}))
+        state(soleWrite.getStateAttr()).wholeWriter = true;
+    }
+  }
+  for (auto [resource, use] : llvm::zip_equal(resources, uses))
+    resource.wholeProposal =
+        use.writes == 1 && use.wholeWriter && !use.readsCandidate;
+}
+
+bool Plan::canReuseProposal() const {
+  if (resources.empty() || llvm::any_of(resources, [](const Resource &resource) {
+        return !resource.wholeProposal;
+      }))
+    return false;
+
+  // An ordinary combinational operation is reusable only when its execution
+  // cannot report a fault. Region bodies must satisfy the same check.
+  auto pure = [](Operation *op) {
+    if (auto binary = dyn_cast<ac::BitsBinaryOp>(op))
+      return binary.getOpcode() != "udiv" && binary.getOpcode() != "urem";
+    return isa<ac::YieldOp>(op) ||
+           (isWire(op) && !isa<ac::ValueRequireOp>(op));
+  };
+  for (const auto &node : nodes) {
+    auto *op = node.site.second;
+    // Planned port copies only read scheduled values. Registration bodies
+    // and guards are checked in their own lexical instances below.
+    if (!node.copies.empty() || isa<ac::SourceMethodCallOp>(op))
+      continue;
+    if (op->walk([&](Operation *nested) {
+          return pure(nested) ? WalkResult::advance() : WalkResult::interrupt();
+        }).wasInterrupted())
+      return false;
+  }
+  for (const auto &[id, instance] : instances) {
+    for (auto method : instance.methods) {
+      if (method->walk([&](Operation *op) {
+            if (op == method.getOperation() || pure(op))
+              return WalkResult::advance();
+            if (auto write = dyn_cast<ac::SourceStateWriteOp>(op))
+              if (resources[states.find({id, write.getStateAttr()})->second]
+                      .wholeProposal)
+                return WalkResult::advance();
+            return WalkResult::interrupt();
+          }).wasInterrupted())
+        return false;
+    }
+  }
+  return true;
+}
+
 void Plan::scheduleWork() {
   llvm::DenseMap<InstanceId, llvm::SetVector<InstanceId>> incoming;
   llvm::DenseMap<InstanceId, SmallVector<InstanceId>> outgoing;
@@ -962,125 +1038,6 @@ void Plan::scheduleWork() {
       schedule.push_back({id, instances.at(id).workSegments++, offset, offset});
     schedule.back().end = offset + 1;
   }
-}
-
-LogicalResult Plan::deferWholeWrites() {
-  for (auto [ordinal, node] : llvm::enumerate(nodes)) {
-    auto registration = dyn_cast<ac::SourceMethodCallOp>(node.site.second);
-    if (!registration)
-      continue;
-    sampleRoots.push_back(ordinal);
-    const auto &bound = target(node.site);
-    if ((registration.getPath() &&
-         !ac::isSourceLiteralTrue(registration.getPath())) ||
-        !total(bound))
-      continue;
-    auto method = bound.method;
-    auto &body = method.getBody().front();
-    ac::SourceStateWriteOp write;
-    for (auto &op : body.without_terminator()) {
-      if (auto store = dyn_cast<ac::SourceStateWriteOp>(op)) {
-        if (write || !store.getSelectors().empty() ||
-            !ac::isSourceLiteralTrue(store.getPath())) {
-          write = {};
-          break;
-        }
-        write = store;
-      } else if (!isWire(&op) || checksDivisionInWork(&op)) {
-        write = {};
-        break;
-      }
-    }
-    if (!write)
-      continue;
-    auto resource = states.find({bound.receiver, write.getStateAttr()})->second;
-    if (stateWriters.find(resource)->second != ordinal)
-      continue;
-
-    // The Rule has one unconditional whole-State write with no competing
-    // transaction, and no other effect. A directly forwarded result can be
-    // published during Work without evaluating the write.
-    auto source = [&](Value value) -> std::optional<Net> {
-      auto arg = dyn_cast<BlockArgument>(value);
-      if (!arg || arg.getOwner() != &body)
-        return std::nullopt;
-      auto index = arg.getArgNumber();
-      auto formals = method.getFunctionType().getNumInputs();
-      if (index < formals)
-        return Net{node.site.first, registration.getArguments()[index]};
-      return Net{bound.receiver, method.getCaptures()[index - formals]};
-    };
-    auto value = source(write.getValue());
-    if (!value)
-      continue;
-    SmallVector<Net> outputs;
-    auto results = yield(body).getValues();
-    for (auto result : results)
-      if (auto net = source(result))
-        outputs.push_back(*net);
-    if (outputs.size() != results.size())
-      continue;
-    deferredWrites.try_emplace(ordinal, DeferredWrite{resource, *value, outputs});
-  }
-  for (auto [method, user] : methodUsers)
-    if (!deferredWrites.contains(user))
-      sampleMethods.insert(method);
-  for (auto [net, user] : captureUsers)
-    if (!deferredWrites.contains(user))
-      methodSlots.insert(net);
-  bool sampleEffects = false;
-  for (auto [ordinal, node] : llvm::enumerate(nodes)) {
-    auto *op = node.site.second;
-    if (!node.fixed && (isa<ac::SourceExpectOp, ac::SourceObserveOp>(op) ||
-                        (isWire(op) && checksDivisionInWork(op)))) {
-      sampleRoots.push_back(ordinal);
-      sampleEffects = true;
-    }
-  }
-  pureWork = !sampleEffects && llvm::all_of(methodUsers, [&](const auto &entry) {
-               return deferredWrites.contains(entry.second);
-             });
-  if (deferredWrites.empty())
-    return success();
-
-  // Keep the results and all effects in the normal sample. The original
-  // dependency edges include the deferred write data, so replace them with
-  // the forwarding dependencies only for the reachability walk.
-  for (const auto &[ordinal, write] : deferredWrites)
-    for (Net output : write.outputs)
-      if (failed(require(output, std::nullopt, nodes[ordinal].site.second)))
-        return failure();
-
-  llvm::DenseSet<unsigned> live;
-  while (!sampleRoots.empty()) {
-    unsigned index = sampleRoots.pop_back_val();
-    if (live.insert(index).second && !deferredWrites.contains(index))
-      llvm::append_range(sampleRoots, nodes[index].inputs);
-  }
-  for (auto [index, node] : llvm::enumerate(nodes))
-    if (!node.fixed && !live.contains(index))
-      edgeWork.insert(index);
-
-  // Reuse Work only when it has no remaining effects. The phase cache
-  // retains the values read across the boundary by commit-only operations.
-  if (!pureWork)
-    return success();
-  llvm::DenseSet<Net> sampleSlots;
-  for (auto [index, node] : llvm::enumerate(nodes)) {
-    if (edgeWork.contains(index)) {
-      for (unsigned input : node.inputs)
-        if (!nodes[input].fixed && !edgeWork.contains(input))
-          collectWrittenSlots(nodes[input], cacheFrontier);
-    } else if (!node.fixed) {
-      collectWrittenSlots(node, sampleSlots);
-    }
-  }
-  for (const auto &entry : deferredWrites) {
-    Net net = projection(entry.second.value).net;
-    if (sampleSlots.contains(net))
-      cacheFrontier.insert(net);
-  }
-  return success();
 }
 
 } // namespace acir::compiler::linked

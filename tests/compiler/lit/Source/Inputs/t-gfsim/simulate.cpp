@@ -8,6 +8,12 @@
 using gfsim::Bits;
 using gfsim::t_gfsim::Model;
 
+template <class T>
+concept PhysicalClock = requires(T &model) { model.in_pyc_clk; };
+template <class T>
+concept PhysicalReset = requires(T &model) { model.in_pyc_rst; };
+static_assert(!PhysicalClock<Model> && !PhysicalReset<Model>);
+
 static void step(Model &model) {
   if (!model.Step()) {
     std::fprintf(stderr, "%s\n", model.error.c_str());
@@ -16,16 +22,28 @@ static void step(Model &model) {
   assert(model.error.empty());
 }
 
-#if !defined(MULTI_OUTPUTS) && !defined(GROUPED_OUTPUTS) && !defined(FANOUT) && \
-    !defined(INTERLEAVED) && !defined(CACHED_WORK)
-static void edge(Model &model, bool reset = false) {
-  model.in_pyc_rst = Bits<1>{reset};
-  model.in_pyc_clk = Bits<1>{0};
-  step(model);
-  model.in_pyc_clk = Bits<1>{1};
-  step(model);
+static void work(Model &model) {
+  assert(model.Work());
+  assert(model.error.empty());
 }
-#endif
+
+static void cycle(Model &model, bool reset = false) {
+  if (reset) {
+    model.Reset();
+    assert(model.cycle() == 0);
+    assert(!model.Xfer());
+    work(model);
+  } else {
+    const auto previous = model.cycle();
+    work(model);
+    work(model);
+    assert(model.cycle() == previous);
+    assert(model.Xfer());
+    assert(model.cycle() == previous + 1);
+    assert(!model.Xfer());
+    assert(model.cycle() == previous + 1);
+  }
+}
 
 #if defined(MULTI_OUTPUTS) || defined(GROUPED_OUTPUTS)
 int main() {
@@ -71,35 +89,41 @@ int main() {
 }
 #elif defined(STAGE)
 int main() {
-  Model model;
-  model.in_update = Bits<1>{1};
-  model.in_value = Bits<8>{23};
-  edge(model, true);
-  assert(model.out_result_0 == Bits<8>{9});
-
-  model.in_pyc_rst = Bits<1>{0};
-  model.in_pyc_clk = Bits<1>{0};
-  step(model);
-  assert(model.out_result_0 == Bits<8>{9});
-  model.in_pyc_clk = Bits<1>{1};
-  step(model);
-  assert(model.out_result_0 == Bits<8>{23});
-  assert(model.out_result_1 == Bits<8>{9 ^ 255});
-
-  model.in_value = Bits<8>{42};
-  step(model);
-  assert(model.out_result_0 == Bits<8>{23});
-  assert(model.out_result_1 == Bits<8>{23 ^ 255});
-  model.in_update = Bits<1>{0};
-  edge(model);
-  assert(model.out_result_0 == Bits<8>{23});
-  model.in_pyc_rst = Bits<1>{1};
-  model.in_pyc_clk = Bits<1>{0};
-  step(model);
-  assert(model.out_result_0 == Bits<8>{23});
-  model.in_pyc_clk = Bits<1>{1};
-  step(model);
-  assert(model.out_result_0 == Bits<8>{9});
+  Model manual, automatic;
+  assert(!manual.Xfer());
+  assert(manual.cycle() == 0);
+  manual.in_update = automatic.in_update = Bits<1>{1};
+  manual.in_value = Bits<8>{23};
+  work(manual);
+  assert(manual.out_result_0 == Bits<8>{9});
+  assert(manual.cycle() == 0);
+  manual.in_value = automatic.in_value = Bits<8>{42};
+  work(manual); // Replace the uncommitted 23 with 42.
+  assert(manual.out_result_0 == Bits<8>{9});
+  assert(manual.Xfer());
+  step(automatic);
+  assert(manual.cycle() == 1 && automatic.cycle() == 1);
+  assert(!manual.Xfer());
+  assert(manual.cycle() == 1);
+  manual.in_update = automatic.in_update = Bits<1>{0};
+  work(manual);
+  work(automatic);
+  assert(manual.out_result_0 == Bits<8>{42});
+  assert(manual.out_result_1 == Bits<8>{42 ^ 255});
+  assert(manual.out_result_0 == automatic.out_result_0);
+  assert(manual.Xfer());
+  manual.in_value = Bits<8>{77};
+  step(manual); // A disabled update holds committed state across cycles.
+  assert(manual.out_result_0 == Bits<8>{42});
+  manual.in_update = Bits<1>{1};
+  manual.in_value = Bits<8>{77};
+  work(manual);
+  manual.Reset(); // Discard pending 77 and restore the initial state.
+  assert(manual.cycle() == 0);
+  assert(!manual.Xfer());
+  manual.in_update = Bits<1>{0};
+  work(manual);
+  assert(manual.out_result_0 == Bits<8>{9});
 }
 #elif defined(SWAP_STATE)
 int main() {
@@ -109,37 +133,39 @@ int main() {
     assert(model.out_result_1[0] == Bits<8>{right});
   };
   model.in_divisor = Bits<8>{1};
-  edge(model, true);
-  model.in_word = Bits<8>{64};
   model.in_healthy = Bits<1>{1};
-  model.in_pyc_rst = Bits<1>{0};
-  model.in_pyc_clk = Bits<1>{0};
-  model.in_divisor = Bits<8>{0};
-  assert(!model.Step());
-  assert(model.error == "t-gfsim division by zero");
-  model.in_divisor = Bits<8>{1};
-  step(model);
+  model.in_word = Bits<8>{64};
+  work(model);
+  work(model); // Reusing successful Work must leave aggregate Q untouched.
   check(9, 23);
-  assert(model.out_result_2 == Bits<8>{64 ^ 23});
-
-  model.in_pyc_clk = Bits<1>{1};
+  model.in_divisor = Bits<8>{0};
+  assert(!model.Work());
+  assert(!model.error.empty());
+  assert(!model.Xfer());
+  assert(model.cycle() == 0);
+  check(9, 23);
+  model.in_divisor = Bits<8>{1};
   model.in_healthy = Bits<1>{0};
   assert(!model.Step());
+  assert(!model.Xfer());
   check(9, 23);
-
   model.in_healthy = Bits<1>{1};
   step(model);
+  check(23, 9); // Direct state outputs reflect the committed Q.
+  work(model);
+  work(model);
   check(23, 9);
   assert(model.out_result_0.field_0[1] == Bits<8>{31});
   assert(model.out_result_1[1] == Bits<8>{12});
-  assert(model.out_result_2 == Bits<8>{64 ^ 23});
-  step(model);
-  check(23, 9);
   assert(model.out_result_2 == Bits<8>{64 ^ 9});
-
-  edge(model, true);
+  assert(model.Xfer());
+  work(model);
+  check(9, 23); // Aggregate updates swap snapshots, never aliases.
+  model.Reset();
+  assert(model.cycle() == 0);
+  assert(!model.Xfer());
+  work(model);
   check(9, 23);
-  assert(model.out_result_2 == Bits<8>{64 ^ 9});
 }
 #elif defined(CACHED_WORK)
 int main() {
@@ -153,75 +179,79 @@ int main() {
     }
     return left ^ right;
   };
-  struct Inputs {
-    bool clock, reset;
-    std::uint32_t first, second, noise;
-  };
+  struct Inputs { std::uint32_t first, second, noise; };
   constexpr Inputs samples[] = {
-      {false, false, 3,  17, 0}, {true,  false, 3, 17, 0},
-      {true,  false, 57, 91, 9}, {false, false, 57, 91, 9},
-      {true,  false, 57, 91, 9}, {true,  false, 57, 91, 9},
-      {false, true,  42, 41, 3}, {true,  true,  42, 41, 3},
-      {false, false, 42, 41, 3},
+      {3, 17, 0}, {57, 91, 9}, {42, 41, 3},
+      {42, 41, 19}, {101, 41, 19}, {101, 202, 19},
   };
   std::uint32_t first = 3, second = 5;
-  bool previous = false;
   for (const auto &sample : samples) {
-    model.in_pyc_clk = Bits<1>{sample.clock};
-    model.in_pyc_rst = Bits<1>{sample.reset};
     model.in_next_word = Bits<32>{sample.first};
     model.in_next_other = Bits<32>{sample.second};
     model.in_noise = Bits<32>{sample.noise};
-    step(model);
-    assert(model.out_result_0.field_0 == Bits<32>{sample.reset ? 0 : mix(first)});
-    assert(model.out_result_0.field_1 ==
-           Bits<32>{sample.reset ? 0 : mix(second) ^ sample.noise});
-    if (sample.clock && !previous) {
-      first = sample.reset ? 3 : sample.first;
-      second = sample.reset ? 5 : sample.second;
-    }
-    previous = sample.clock;
+    work(model);
+    work(model); // Re-evaluation does not advance state.
+    assert(model.out_result_0.field_0 == Bits<32>{mix(first)});
+    assert(model.out_result_0.field_1 == Bits<32>{mix(second) ^ sample.noise});
     assert(model.out_result_1.field_0 == Bits<32>{first});
     assert(model.out_result_1.field_1 == Bits<32>{second});
     assert(model.out_result_2 == Bits<8>{51});
+    assert(model.Xfer());
+    first = sample.first;
+    second = sample.second;
+    // Identical inputs in the next epoch must observe the newly committed Q.
+    work(model);
+    work(model);
+    assert(model.out_result_0.field_0 == Bits<32>{mix(first)});
+    assert(model.out_result_0.field_1 == Bits<32>{mix(second) ^ sample.noise});
+    assert(model.out_result_1.field_0 == Bits<32>{first});
+    assert(model.out_result_1.field_1 == Bits<32>{second});
   }
+  model.Reset();
+  assert(!model.Xfer());
+  work(model); // The same inputs must now observe reset Q, not cached Q.
+  work(model);
+  assert(model.out_result_0.field_0 == Bits<32>{mix(3)});
+  assert(model.out_result_0.field_1 == Bits<32>{mix(5) ^ 19});
+  assert(model.out_result_1.field_0 == Bits<32>{3});
+  assert(model.out_result_1.field_1 == Bits<32>{5});
 }
 #elif defined(METHODS)
 int main() {
   Model model;
-  edge(model, true);
+  cycle(model, true);
   assert(model.out_result_0 == Bits<8>{4});
   assert(model.out_result_1 == Bits<8>{4});
 
   model.in_limit = Bits<8>{6};
   model.in_value = Bits<8>{7};
   model.in_select = Bits<1>{0};
-  edge(model);
+  cycle(model);
   // The method on the other arm also participates in admission.
   assert(model.out_result_1 == Bits<8>{4});
 
   model.in_limit = Bits<8>{8};
-  edge(model);
+  cycle(model);
   assert(model.out_result_0 == Bits<8>{4});
   // The second call reads the transaction candidate written by the first.
   assert(model.out_result_1 == Bits<8>{8});
 
   model.in_value = Bits<8>{4};
   model.in_select = Bits<1>{1};
-  edge(model);
+  cycle(model);
   assert(model.out_result_0 == Bits<8>{5});
   assert(model.out_result_1 == Bits<8>{8});
 
   model.in_limit = Bits<8>{15};
   model.in_select = Bits<1>{0};
   model.in_value = Bits<8>{11};
-  edge(model);
+  cycle(model);
   assert(model.out_result_0 == Bits<8>{5});
   assert(model.out_result_1 == Bits<8>{12});
 
   model.in_select = Bits<1>{1};
   model.in_value = Bits<8>{2};
-  edge(model);
+  cycle(model);
   // Only the right receiver's committed state now closes admission.
   assert(model.out_result_0 == Bits<8>{5});
   assert(model.out_result_1 == Bits<8>{12});
@@ -231,31 +261,36 @@ int main() {
   Model model;
   model.in_left = Bits<16>{7};
   model.in_right = Bits<16>{35};
-  edge(model, true);
+  cycle(model, true);
   assert(model.out_result == Bits<16>{0});
-  edge(model); // Packet pair enters empty inputs.
+  model.in_left = Bits<16>{1};
+  model.in_right = Bits<16>{2};
+  work(model); // This pending packet must be replaced, not queued.
+  model.in_left = Bits<16>{7};
+  model.in_right = Bits<16>{35};
+  cycle(model); // Only the latest packet pair enters empty inputs.
   assert(model.out_result == Bits<16>{0});
 
   model.in_left = Bits<16>{9};
   model.in_right = Bits<16>{51};
-  edge(model); // Full inputs cannot admit replacement; old pair transfers.
+  cycle(model); // Full inputs cannot admit replacement; old pair transfers.
   assert(model.out_result == Bits<16>{0});
-  edge(model); // New pair enters; first sum pops.
+  cycle(model); // New pair enters; first sum pops.
   assert(model.out_result == Bits<16>{42});
-  edge(model); // New pair transfers; no new result yet.
+  cycle(model); // New pair transfers; no new result yet.
   assert(model.out_result == Bits<16>{42});
-  edge(model); // Second sum pops.
+  cycle(model); // Second sum pops.
   assert(model.out_result == Bits<16>{60});
 
-  edge(model, true);
+  cycle(model, true);
   assert(model.out_result == Bits<16>{0});
 }
 #elif defined(CHECKED_QUEUE_ADD)
 int main() {
   Model model;
-  edge(model, true);
+  cycle(model, true);
   for (unsigned i = 0; i < 7; ++i)
-    edge(model);
+    cycle(model);
 }
 #elif defined(TABLE_STATE)
 int main() {
@@ -267,7 +302,7 @@ int main() {
   };
 
   model.in_healthy = Bits<1>{1};
-  edge(model, true);
+  cycle(model, true);
   check(0, 1, 2);
   check(1, 3, 4);
   check(2, 5, 6);
@@ -275,16 +310,17 @@ int main() {
   model.in_index = Bits<1>{1};
   model.in_value = Bits<8>{21};
   model.in_other = Bits<8>{34};
-  edge(model);
+  cycle(model);
   check(0, 1, 2);
   check(1, 21, 34);
   check(2, 34, 21);
   assert(model.out_result_1 == Bits<8>{21}); // Own candidate.
   assert(model.out_result_2 == Bits<8>{3}); // Independent snapshot.
+  work(model);
+  work(model);
+  assert(model.out_result_2 == Bits<8>{21}); // Same inputs, newly committed Q.
+  check(1, 21, 34);
 
-  model.in_pyc_clk = Bits<1>{0};
-  step(model);
-  model.in_pyc_clk = Bits<1>{1};
   model.in_index = Bits<1>{0};
   model.in_value = Bits<8>{55};
   model.in_other = Bits<8>{89};
@@ -295,11 +331,11 @@ int main() {
   check(2, 34, 21);
 
   model.in_healthy = Bits<1>{1};
-  step(model); // Retry the same edge.
+  step(model);
   check(0, 55, 89);
   check(1, 21, 34);
   check(2, 89, 55);
-  edge(model, true);
+  cycle(model, true);
   check(0, 1, 2);
   check(1, 3, 4);
   check(2, 5, 6);
@@ -307,19 +343,19 @@ int main() {
 #elif defined(TABLE_QUEUE)
 int main() {
   Model model;
-  edge(model, true);
+  cycle(model, true);
   model.in_value = Bits<8>{40};
   model.in_issue = Bits<1>{1};
   model.in_take = Bits<1>{1};
-  edge(model);
+  cycle(model);
   assert(model.out_result.field_1 == Bits<8>{0});
 
   model.in_value = Bits<8>{89};
   model.in_issue = Bits<1>{0};
-  edge(model);
+  cycle(model);
   assert(model.out_result.field_1 == Bits<8>{0});
 
-  edge(model);
+  cycle(model);
   const auto &packet = model.out_result;
   assert(packet.field_0[0].field_0 == Bits<8>{40});
   assert(packet.field_0[0].field_1 == Bits<8>{2});
@@ -329,7 +365,7 @@ int main() {
   assert(packet.field_0[2].field_1 == Bits<8>{41});
   assert(packet.field_1 == Bits<8>{42});
 
-  edge(model, true);
+  cycle(model, true);
   assert(model.out_result.field_0[0].field_0 == Bits<8>{0});
   assert(model.out_result.field_1 == Bits<8>{0});
 }
@@ -343,58 +379,66 @@ int main() {
     assert(model.out_result[1].field_0 == Bits<8>{right});
   };
 
-  edge(model, true);
+  cycle(model, true);
   check(3, 3);
   model.in_enable[0] = Bits<1>{1};
-  edge(model);
+  cycle(model);
   check(3, 3); // The assembled Table samples committed child outputs in Work.
   model.in_enable[0] = Bits<1>{0};
   model.in_enable[1] = Bits<1>{1};
   model.in_index = Bits<1>{1};
-  edge(model);
+  cycle(model);
   check(14, 3);
-  edge(model);
+  cycle(model);
   check(14, 24);
   assert(model.out_result[0].field_1 == Bits<8>{11});
   assert(model.out_result[1].field_1 == Bits<8>{21});
+  work(model);
+  work(model);
+  check(14, 45); // Each committed cycle adds 21 exactly once to the second cell.
+  model.Reset();
+  assert(!model.Xfer());
+  work(model);
+  work(model);
+  check(3, 3); // Reset invalidates pending work with identical collection inputs.
 }
 #elif defined(TIMED_QUEUE)
 int main() {
   Model model;
-  edge(model, true);
+  cycle(model, true);
   model.in_value = Bits<8>{10};
   model.in_issue = Bits<1>{1};
   model.in_inspect = Bits<1>{1};
   model.in_take = Bits<1>{1};
-  edge(model);
+  cycle(model);
   assert(model.out_result_0 == Bits<8>{0});
   assert(model.out_result_1 == Bits<8>{0});
 
   model.in_issue = Bits<1>{0};
   model.in_inspect = Bits<1>{0};
   model.in_take = Bits<1>{0};
-  edge(model);
-  edge(model); // Latency advances across idle edges.
+  cycle(model);
+  cycle(model); // Latency advances across idle cycles.
   model.in_inspect = Bits<1>{1};
-  edge(model);
+  cycle(model);
   assert(model.out_result_0 == Bits<8>{10});
   assert(model.out_result_1 == Bits<8>{0});
 
   model.in_issue = Bits<1>{1};
   model.in_take = Bits<1>{1};
   model.in_value = Bits<8>{20};
-  edge(model); // Peek and pop read the same head; push is blocked.
+  cycle(model); // Peek and pop read the same head; push is blocked.
   assert(model.out_result_1 == Bits<8>{10});
   model.in_value = Bits<8>{30};
-  edge(model); // Push again once there is committed capacity.
+  cycle(model); // Push again once there is committed capacity.
   assert(model.out_result_1 == Bits<8>{10});
 
   model.in_issue = Bits<1>{0};
-  edge(model);
+  cycle(model);
   assert(model.out_result_1 == Bits<8>{10});
-  edge(model);
+  cycle(model);
   assert(model.out_result_1 == Bits<8>{10});
-  edge(model);
+  cycle(model);
   assert(model.out_result_0 == Bits<8>{30});
   assert(model.out_result_1 == Bits<8>{30});
 }
@@ -402,19 +446,35 @@ int main() {
 int main() {
   Model model;
   model.in_healthy = Bits<1>{1};
-  edge(model, true);
+  cycle(model, true);
+  assert(model.observations.empty()); // Reset and Work do not publish.
   model.in_issue = Bits<1>{1};
-  edge(model);
+  work(model);
+  assert(model.observations.empty());
+  assert(model.Xfer());
+  auto checkObservation = [&](unsigned issue) {
+    assert(model.observations.size() == 1);
+    assert(model.observations[0].event == "issue");
+    assert(model.observations[0].value ==
+           gfsim::t_gfsim::Format(Bits<1>{issue}));
+  };
+  checkObservation(1); // Latest Work replaces the earlier issue=0 sample.
   assert(model.out_result_2 == Bits<8>{1});
   assert(model.out_result_3 == Bits<8>{0});
 
-  model.in_pyc_clk = Bits<1>{0};
   model.in_issue = Bits<1>{0};
-  step(model);
-  model.in_pyc_clk = Bits<1>{1};
   model.in_take_first = Bits<1>{1};
+  work(model);
+  work(model); // A successful pending pop must be invalidated by later failure.
+  checkObservation(1);
+  assert(model.out_result_0 == Bits<8>{0});
+  assert(model.out_result_2 == Bits<8>{1});
   model.in_take_second = Bits<1>{1};
+  const auto beforeFailure = model.cycle();
   assert(!model.Step());
+  checkObservation(1);
+  assert(!model.Xfer());
+  assert(model.cycle() == beforeFailure);
   assert(!model.error.empty());
   assert(model.out_result_0 == Bits<8>{0});
   assert(model.out_result_1 == Bits<8>{0});
@@ -423,6 +483,7 @@ int main() {
   model.in_take_second = Bits<1>{0};
   model.in_overwrite = Bits<1>{1};
   assert(!model.Step());
+  checkObservation(1);
   assert(!model.error.empty());
   assert(model.out_result_0 == Bits<8>{0});
   assert(model.out_result_2 == Bits<8>{1});
@@ -430,16 +491,24 @@ int main() {
   model.in_overwrite = Bits<1>{0};
   model.in_healthy = Bits<1>{0};
   assert(!model.Step());
+  checkObservation(1);
   assert(model.error.find("injected check failure") != std::string::npos);
   assert(model.out_result_0 == Bits<8>{0});
   assert(model.out_result_2 == Bits<8>{1});
 
-  // Retry the failed rising sample. Its proposal and the clock did not commit.
+  // Failed Work leaves both queue and state unchanged.
   model.in_healthy = Bits<1>{1};
-  step(model);
+  work(model);
+  checkObservation(1); // Successful Work also waits for Xfer to publish.
+  assert(model.Xfer());
+  checkObservation(0);
   assert(model.out_result_0 == Bits<8>{37});
   assert(model.out_result_1 == Bits<8>{0});
   assert(model.out_result_2 == Bits<8>{2});
   assert(model.out_result_3 == Bits<8>{1});
+  model.Reset();
+  assert(model.observations.empty());
+  assert(model.cycle() == 0);
+  assert(!model.Xfer());
 }
 #endif

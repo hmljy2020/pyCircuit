@@ -33,9 +33,8 @@ void pack(std::string &text, unsigned low,
 
 #include "ports.h"
 
-void sample(Model &model, bool high) {
-  model.in_pyc_clk = Bits<1>{high};
-  if (!model.Step())
+void work(Model &model) {
+  if (!model.Work())
     throw std::runtime_error(model.error);
 }
 
@@ -45,6 +44,7 @@ int main() {
     std::string command, raw;
     while (std::cin >> command) {
       if (command == "S") {
+        work(model);
         std::cout << state(model) << std::endl;
         continue;
       }
@@ -52,15 +52,19 @@ int main() {
           raw.find_first_not_of("01") != std::string::npos)
         throw std::runtime_error("invalid bus input");
       driveBus(model, raw);
-      model.in_pyc_rst = Bits<1>{command == "R"};
       if (command == "Q") {
-        sample(model, false);
+        work(model);
         std::cout << pins(model) << std::endl;
       } else if (command == "T" || command == "R") {
         auto before = state(model);
-        sample(model, true);
+        if (command == "R") {
+          model.Reset();
+        } else {
+          work(model);
+        }
         auto result = pins(model);
-        sample(model, false);
+        if (command == "T" && !model.Xfer())
+          throw std::runtime_error(model.error);
         std::cout << result << ' ' << (before == state(model)) << std::endl;
       } else {
         throw std::runtime_error("invalid bridge command");
