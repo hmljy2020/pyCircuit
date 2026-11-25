@@ -27,6 +27,8 @@ int main() {
   assert(model.Work());
   assert(model.cycle() == 0);
 
+  assert(model.out_updated_word.value() == 9);
+  assert(model.out_candidate_sum.value() == 22);
   expect(model.out_replicated, {4, 9, 4, 4, 9, 4});
   expect(model.out_transposed, {1, 4, 2, 5, 3, 6});
   expect(model.out_mapped, {9, 15, 11, 12, 18, 14});
@@ -69,4 +71,13 @@ int main() {
   assert(!model.out_high_valid0.toBool() && !model.out_high_valid1.toBool());
   expect(model.out_row, {7, 9, 7});
   assert(model.out_mode.value() == 3 && !model.out_enable.toBool());
+
+  assert(model.out_updated_word.value() == 7); // Disabled, despite a valid index.
+  assert(model.out_candidate_sum.value() == 25);
+
+  model.in_update = Bits<1>{1};
+  model.in_column_index = Bits<70>{3};
+  assert(model.Work());
+  assert(model.out_updated_word.value() == 7); // Index 3 matches no lane.
+  assert(model.out_candidate_sum.value() == 23);
 }

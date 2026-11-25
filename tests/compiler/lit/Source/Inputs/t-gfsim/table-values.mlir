@@ -17,6 +17,8 @@
 !grid = !ac.table<[#w2, #w3], !b8>
 !transposed = !ac.table<[#w3, #w2], !b8>
 !row = !ac.table<[#w3], !b8>
+!flags = !ac.table<[#w3], !b1>
+!indices = !ac.table<[#w3], !b2>
 !record = !ac.struct<"table_values.Record">
 !mode = !ac.enum<"table_values.Mode">
 !modes = !ac.table<[#w2], !mode>
@@ -32,6 +34,23 @@ module attributes {ac.linked_implicit_guards, ac.source_units = [#owner], ac.sta
   ^bb0(%grid: !grid, %threshold: !b8, %row_index: !b70, %column_index: !b70, %lookup: !b70, %update: !b1, %fallback: !b8, %clk: !b1, %reset: !b1):
     %row = "ac.table.create"(%threshold, %fallback, %threshold) : (!b8, !b8, !b8) -> !row
     %alternate = "ac.table.splat"(%fallback) {shape = [#w3]} : (!b8) -> !row
+    %write_index = "ac.table.index"(%column_index) {shape = [#w3]} : (!b70) -> !b2
+    %indices = "ac.table.splat"(%write_index) {shape = [#w3]} : (!b2) -> !indices
+    %candidate_row = "ac.table.map"(%row, %indices, %alternate) ({
+    ^bb0(%i: !b2, %old: !b8, %target: !b2, %replacement: !b8):
+      %hit = "ac.bits.compare"(%i, %target) {predicate = "eq"} : (!b2, !b2) -> !b1
+      %word = "ac.bits.select"(%hit, %replacement, %old) : (!b1, !b8, !b8) -> !b8
+      "ac.yield"(%word) : (!b8) -> ()
+    }) {shape = [#w3], operandSegmentSizes = array<i32: 3, 0>} : (!row, !indices, !row) -> !row
+    %write_flags = "ac.table.splat"(%update) {shape = [#w3]} : (!b1) -> !flags
+    %updated_row = "ac.table.map"(%write_flags, %candidate_row, %row) ({
+    ^bb0(%i: !b2, %enable_write: !b1, %candidate: !b8, %previous: !b8):
+      %chosen = "ac.bits.select"(%enable_write, %candidate, %previous) : (!b1, !b8, !b8) -> !b8
+      "ac.yield"(%chosen) : (!b8) -> ()
+    }) {shape = [#w3], operandSegmentSizes = array<i32: 3, 0>} : (!flags, !row, !row) -> !row
+    %last_lane = "ac.bits.constant"() {value = #w2} : () -> !b2
+    %updated_word = "ac.table.read"(%updated_row, %last_lane) : (!row, !b2) -> !b8
+    %candidate_sum = "ac.table.fold"(%candidate_row) {kind = "add"} : (!row) -> !b8
     %replicated = "ac.table.splat"(%row) {shape = [#w2]} : (!row) -> !grid
     %transposed = "ac.table.view"(%grid) {kind = "transpose", parameters = {axes = [#w1, #w0]}} : (!grid) -> !transposed
     %mapped, %ordinals, %unused_table = "ac.table.map"(%grid, %replicated, %threshold, %lookup) ({
@@ -88,7 +107,7 @@ module attributes {ac.linked_implicit_guards, ac.source_units = [#owner], ac.sta
       }) {occurrence = #branch_site, ac.condition_location = #span} : (!b1) -> !b8
       "ac.yield"(%result) : (!b8) -> ()
     }) {sym_name = "checked_lookup", sym_visibility = "private", function_type = () -> !b8, argument_names = [], occurrence = #origin, ac.guard_location = #span, ac.parameters = [], ac.result_constraints = [{kind = "hardware", source_kind = "fixed_bits", type = !b8}], ac.return_form = "single"} : (!grid, !b70, !b8) -> ()
-    "ac.yield"(%mapped, %ordinals, %transposed, %replicated, %coordinate, %selected, %valid, %membership, %read, %mask, %low0, %low1, %low_valid0, %low_valid1, %high0, %high1, %high_valid0, %high_valid1, %sum, %product, %new_row, %mode_bits, %enable, %checked, %protected_word) : (!grid, !grid, !transposed, !grid, !b3, !b8, !b1, !b1, !b8, !b6, !b3, !b3, !b1, !b1, !b3, !b3, !b1, !b1, !b8, !b8, !row, !b2, !b1, !b8, !b8) -> () loc("table_values.py":12:1)
-  }) {sym_name = "table_values.Top", source_owner = #owner, parameters = [], type_parameters = [], ac.domain_inputs = {clock = 7 : i64, reset = 8 : i64}, function_type = (!grid, !b8, !b70, !b70, !b70, !b1, !b8, !b1, !b1) -> (!grid, !grid, !transposed, !grid, !b3, !b8, !b1, !b1, !b8, !b6, !b3, !b3, !b1, !b1, !b3, !b3, !b1, !b1, !b8, !b8, !row, !b2, !b1, !b8, !b8), input_names = ["grid", "threshold", "row_index", "column_index", "lookup", "update", "fallback", "pyc_clk", "pyc_rst"], output_names = ["mapped", "ordinals", "transposed", "replicated", "coordinate", "selected", "valid", "membership", "read", "mask", "low0", "low1", "low_valid0", "low_valid1", "high0", "high1", "high_valid0", "high_valid1", "sum", "product", "row", "mode", "enable", "checked", "protected_word"]} : () -> ()
+    "ac.yield"(%mapped, %ordinals, %transposed, %replicated, %coordinate, %selected, %valid, %membership, %read, %mask, %low0, %low1, %low_valid0, %low_valid1, %high0, %high1, %high_valid0, %high_valid1, %sum, %product, %new_row, %mode_bits, %enable, %checked, %protected_word, %updated_word, %candidate_sum) : (!grid, !grid, !transposed, !grid, !b3, !b8, !b1, !b1, !b8, !b6, !b3, !b3, !b1, !b1, !b3, !b3, !b1, !b1, !b8, !b8, !row, !b2, !b1, !b8, !b8, !b8, !b8) -> () loc("table_values.py":12:1)
+  }) {sym_name = "table_values.Top", source_owner = #owner, parameters = [], type_parameters = [], ac.domain_inputs = {clock = 7 : i64, reset = 8 : i64}, function_type = (!grid, !b8, !b70, !b70, !b70, !b1, !b8, !b1, !b1) -> (!grid, !grid, !transposed, !grid, !b3, !b8, !b1, !b1, !b8, !b6, !b3, !b3, !b1, !b1, !b3, !b3, !b1, !b1, !b8, !b8, !row, !b2, !b1, !b8, !b8, !b8, !b8), input_names = ["grid", "threshold", "row_index", "column_index", "lookup", "update", "fallback", "pyc_clk", "pyc_rst"], output_names = ["mapped", "ordinals", "transposed", "replicated", "coordinate", "selected", "valid", "membership", "read", "mask", "low0", "low1", "low_valid0", "low_valid1", "high0", "high1", "high_valid0", "high_valid1", "sum", "product", "row", "mode", "enable", "checked", "protected_word", "updated_word", "candidate_sum"]} : () -> ()
   "ac.system"() {entry = {callee = @table_values.Top, parameters = [], type_arguments = []}, domain = "default"} : () -> ()
 }

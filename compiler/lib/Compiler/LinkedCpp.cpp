@@ -127,6 +127,12 @@ private:
                                Operation *site, uint64_t *low = nullptr);
 
   std::string slot(Net net) const;
+  ProjectedNet origin(ProjectedNet access) const;
+  bool stable(const ProjectedNet &access) const;
+  bool tableLocal(Net net) const;
+  bool declareMapHere(Net net) const;
+  void materialize(ProjectedNet source, StringRef ws);
+  void materializeInputs(Site site, StringRef ws);
   std::string projectedSlot(const ProjectedNet &access) const;
   LogicalResult emitNode(const Node &node, Expr &scope, unsigned indent);
   std::string ref(const Expr &expr, Value value) const;
@@ -139,6 +145,8 @@ private:
                                    bool guard, Expr *scope = nullptr);
   LogicalResult block(Block &block, Expr &scope, unsigned indent);
   LogicalResult statement(Operation &op, Expr &scope, unsigned indent);
+  bool emitSimpleMap(ac::TableMapOp map, Expr &scope, uint64_t count,
+                     unsigned ordinalWidth, StringRef ws);
   LogicalResult tableRegion(Operation &op, Expr &scope, unsigned indent);
   LogicalResult checkGet(ac::TableGetOp op, const Expr &scope, uint64_t size);
   bool liveUse(OpOperand &use, const Expr &scope) const;
@@ -162,8 +170,25 @@ private:
   llvm::DenseMap<Value, std::string> inputs;
   llvm::DenseMap<Operation *, unsigned> methodIds;
   llvm::DenseMap<Net, ProjectedNet> forwardedSlots;
-  llvm::DenseSet<Net> localSlots, initializedSlots, borrowedSlots, constantSlots;
+  llvm::DenseSet<Net> localSlots, initializedSlots, borrowedSlots,
+      constantSlots;
   SmallVector<std::string> proposalInputTypes, proposalInputValues;
+  struct IndexedWrite {
+    ProjectedNet base;
+    std::string index, data, enable;
+    uint64_t count = 0;
+    void emit(llvm::raw_ostream &out, StringRef ws, StringRef name,
+              StringRef declaration, StringRef previous) const {
+      out << ws << declaration << name << " = " << previous << ";\n"
+          << ws << "if (" << enable << "IndexInRange(" << index << ", " << count
+          << "ULL)) " << name << '[' << index << ".value()] = " << data
+          << ";\n";
+    }
+  };
+  llvm::DenseSet<Net> singleValues;
+  llvm::DenseMap<Net, IndexedWrite> indexedWrites;
+  llvm::DenseSet<Net> materialized;
+  bool inWork = false;
   bool reuseProposal = false;
   bool inlineWork = false;
   unsigned nextLocal = 0;
@@ -406,6 +431,10 @@ LogicalResult Cpp::planTypes() {
       }
     }
   }
+  for (auto [net, count] : assignments)
+    if (count == 1 && (wholeDefinitions.contains(net) ||
+                       net.second.getDefiningOp<ac::TableMapOp>()))
+      singleValues.insert(net);
   uint64_t localBytes = 0;
   for (Net net : plan.slots) {
     auto [id, value] = net;
@@ -527,16 +556,55 @@ std::string Cpp::slot(Net net) const {
   return projectedSlot(plan.projection(net));
 }
 
-std::string Cpp::projectedSlot(const ProjectedNet &access) const {
-  const auto *source = &access;
+ProjectedNet Cpp::origin(ProjectedNet access) const {
   for (;;) {
-    auto it = forwardedSlots.find(source->net);
+    auto it = forwardedSlots.find(access.net);
     if (it == forwardedSlots.end())
-      break;
-    assert(source->path.empty() && "only whole scalar slots can be forwarded");
-    source = &it->second;
+      return access;
+    auto next = it->second;
+    llvm::append_range(next.path, access.path);
+    access = std::move(next);
   }
-  auto net = source->net;
+}
+
+bool Cpp::stable(const ProjectedNet &access) const {
+  return singleValues.contains(access.net) ||
+         plan.storedNets.contains(access.net) ||
+         (access.net.first == 0 && isa<BlockArgument>(access.net.second));
+}
+
+bool Cpp::tableLocal(Net net) const {
+  return inWork && inlineWork && singleValues.contains(net) &&
+         (localSlots.contains(net) || borrowedSlots.contains(net)) &&
+         isa<ac::TableType>(net.second.getType());
+}
+
+bool Cpp::declareMapHere(Net net) const {
+  return tableLocal(net) && net.second.getDefiningOp<ac::TableMapOp>();
+}
+
+// Work-local indexed updates are immutable snapshots. Construct an actual
+// table at its first ordinary use. Downstream maps may consume only the
+// description, e.g. by adding an enable or forwarding the very same table.
+void Cpp::materialize(ProjectedNet source, StringRef ws) {
+  auto net = origin(source).net;
+  auto it = indexedWrites.find(net);
+  if (it == indexedWrites.end() || !materialized.insert(net).second)
+    return;
+  const auto &u = it->second;
+  materialize(u.base, ws);
+  u.emit(out, ws, projectedSlot({net, {}}), "auto ", projectedSlot(u.base));
+}
+
+void Cpp::materializeInputs(Site site, StringRef ws) {
+  if (!indexedWrites.empty())
+    for (Value v : site.second->getOperands())
+      materialize(plan.projection({site.first, v}), ws);
+}
+
+std::string Cpp::projectedSlot(const ProjectedNet &access) const {
+  auto source = origin(access);
+  auto net = source.net;
   std::string result;
   if (auto state = plan.storedNets.find(net); state != plan.storedNets.end())
     result = storage(state->second) + ".Q()";
@@ -547,7 +615,7 @@ std::string Cpp::projectedSlot(const ProjectedNet &access) const {
     result = input->second;
   else
     result = numberName("slot_", plan.slotIds.find(net)->second);
-  for (auto selector : source->path)
+  for (auto selector : source.path)
     if (selector.kind == Projection::Field)
       result += numberName(".field_", selector.index);
     else
@@ -557,6 +625,10 @@ std::string Cpp::projectedSlot(const ProjectedNet &access) const {
 
 LogicalResult Cpp::emitNode(const Node &node, Expr &scope, unsigned indent) {
   if (node.copyIndex) {
+    materialize(plan.projection({node.site.first, node.copyIndex}),
+                std::string(indent, ' '));
+    for (const auto &copy : node.copies)
+      materialize(copy.source, std::string(indent, ' '));
     auto value = ref(scope, node.copyIndex);
     auto target = scope.base + projectedSlot(node.copies.front().destination);
     if (auto get = dyn_cast<ac::TableGetOp>(node.site.second))
@@ -577,16 +649,24 @@ LogicalResult Cpp::emitNode(const Node &node, Expr &scope, unsigned indent) {
     for (const auto &copy : node.copies) {
       if (forwardedSlots.contains(copy.destination.net))
         continue;
+      if (copy.destination.path.empty() && tableLocal(copy.destination.net) &&
+          stable(copy.source) && copy.destination.net != copy.source.net) {
+        forwardedSlots.try_emplace(copy.destination.net, origin(copy.source));
+        continue;
+      }
+      materialize(copy.source, std::string(indent, ' '));
       out << std::string(indent, ' ');
       if (borrowedSlots.contains(copy.destination.net))
         out << "[[maybe_unused]] const auto &";
       else if (initializedSlots.contains(copy.destination.net))
         out << "[[maybe_unused]] auto ";
-      out << scope.base << projectedSlot(copy.destination) << " = " << scope.base
-          << projectedSlot(copy.source) << ";\n";
+      out << scope.base << projectedSlot(copy.destination) << " = "
+          << scope.base << projectedSlot(copy.source) << ";\n";
     }
     return success();
   }
+  if (!isa<ac::TableMapOp>(node.site.second))
+    materializeInputs(node.site, std::string(indent, ' '));
   scope.selectedResult = node.result;
   return statement(*node.site.second, scope, indent);
 }
@@ -858,6 +938,134 @@ LogicalResult Cpp::checkGet(ac::TableGetOp get, const Expr &scope,
   return success();
 }
 
+// Recognize a whole-table copy, a uniform select, or one indexed update.
+// Other lane computations use the ordinary map body.
+bool Cpp::emitSimpleMap(ac::TableMapOp map, Expr &scope, uint64_t count,
+                        unsigned ordinalWidth, StringRef ws) {
+  if (map.getNumResults() != 1)
+    return false;
+  Block &body = map.getBody().front();
+  Value yielded = cast<ac::YieldOp>(body.back()).getValues().front();
+  auto tableFor = [&](Value value) -> Value {
+    auto arg = dyn_cast<BlockArgument>(value);
+    if (!arg || arg.getOwner() != &body || !arg.getArgNumber() ||
+        arg.getArgNumber() > map.getTables().size())
+      return {};
+    return map.getTables()[arg.getArgNumber() - 1];
+  };
+  auto uniform = [&](Value value) -> std::string {
+    auto arg = dyn_cast<BlockArgument>(value);
+    if (!arg || arg.getOwner() != &body)
+      return {};
+    auto read = [&](Value v) {
+      materialize(plan.projection({scope.owner, v}), ws);
+      return ref(scope, v);
+    };
+    if (arg.getArgNumber() > map.getTables().size())
+      return read(
+          map.getCaptures()[arg.getArgNumber() - map.getTables().size() - 1]);
+    if (auto table = tableFor(value)) {
+      auto splat = table.getDefiningOp<ac::TableSplatOp>();
+      if (splat && !isa<ac::TableType>(splat.getInput().getType())) {
+        auto v = splat.getInput();
+        if (inWork && inlineWork && !local(scope) &&
+            stable(origin(plan.projection({scope.owner, v}))))
+          return read(v);
+        return read(table) + "[0]";
+      }
+    }
+    return {};
+  };
+  Net result{scope.owner, map.getResult(0)};
+  std::string dest = ref(scope, result.second);
+  auto declaration =
+      !local(scope) && declareMapHere(result) ? "[[maybe_unused]] auto " : "";
+  auto destDef = declaration + dest;
+  auto source = [&](Value value) {
+    return origin(plan.projection({scope.owner, value}));
+  };
+  auto copy = [&](Value value) {
+    auto from = source(value);
+    if (!local(scope) && tableLocal(result) && stable(from))
+      forwardedSlots.try_emplace(result, from);
+    else {
+      materialize(from, ws);
+      out << ws << destDef << " = " << ref(scope, value) << ";\n";
+    }
+  };
+  auto sameTableType = [&](Value input) {
+    auto lhs = type(input.getType(), scope.owner, map);
+    auto rhs = type(result.second.getType(), scope.owner, map);
+    return succeeded(lhs) && succeeded(rhs) && *lhs == *rhs;
+  };
+  if (auto input = tableFor(yielded)) {
+    if (!sameTableType(input))
+      return false;
+    copy(input);
+    return true;
+  }
+  auto sel = yielded.getDefiningOp<ac::BitsSelectOp>();
+  if (!sel)
+    return false;
+  Value yes = tableFor(sel->getOperand(1));
+  Value no = tableFor(sel->getOperand(2));
+  if (!no || !sameTableType(no) || (yes && !sameTableType(yes)))
+    return false;
+  auto cond = uniform(sel.getCondition());
+  IndexedWrite update;
+  // Keep scalar expressions across nodes only when their original slots are
+  // immutable for this Work. Method/region locals have shorter lifetimes.
+  auto safeUniform = [&](Value value) {
+    Value table = tableFor(value);
+    return table && stable(source(table));
+  };
+  bool remember = !local(scope) && tableLocal(result) && stable(source(no));
+  if (yes && !cond.empty()) {
+    if (yes == no || (!local(scope) && source(yes) == source(no))) {
+      copy(yes);
+      return true;
+    }
+    auto from = source(yes);
+    auto found = indexedWrites.find(from.net);
+    if (!remember || !from.path.empty() || found == indexedWrites.end() ||
+        found->second.base != source(no) || !safeUniform(sel.getCondition())) {
+      materialize(from, ws);
+      materialize(source(no), ws);
+      out << ws << destDef << " = " << cond << ".toBool() ? " << ref(scope, yes)
+          << " : " << ref(scope, no) << ";\n";
+      return true;
+    }
+    update = found->second;
+    auto enable = numberName("write_enable_", nextLocal++);
+    out << ws << "[[maybe_unused]] const bool " << enable << " = "
+        << update.enable << cond << ".toBool();\n";
+    update.enable = enable + " && ";
+  } else {
+    auto cmp = sel.getCondition().getDefiningOp<ac::BitsCompareOp>();
+    if (!cmp || cmp.getPredicate() != "eq" ||
+        (ordinalWidth < 64 && count > (uint64_t{1} << ordinalWidth)))
+      return false;
+    auto ordinal = body.getArgument(0);
+    Value index = cmp.getLhs() == ordinal   ? cmp.getRhs()
+                  : cmp.getRhs() == ordinal ? cmp.getLhs()
+                                            : Value{};
+    if (!index || !isa<ac::BitsType>(sel->getOperand(1).getType()))
+      return false;
+    update = {source(no), uniform(index), uniform(sel->getOperand(1)), ""};
+    if (update.index.empty() || update.data.empty())
+      return false;
+    remember &= safeUniform(index) && safeUniform(sel->getOperand(1));
+  }
+  update.count = count;
+  if (remember) {
+    indexedWrites.try_emplace(result, std::move(update));
+    return true;
+  }
+  materialize(source(no), ws);
+  update.emit(out, ws, dest, declaration, ref(scope, no));
+  return true;
+}
+
 LogicalResult Cpp::tableRegion(Operation &op, Expr &scope, unsigned indent) {
   std::string ws(indent, ' ');
   auto map = dyn_cast<ac::TableMapOp>(op);
@@ -877,10 +1085,12 @@ LogicalResult Cpp::tableRegion(Operation &op, Expr &scope, unsigned indent) {
   Expr region = scope;
   region.selectedResult = {};
   SmallVector<std::string> arguments;
+  unsigned ordinalWidth = 0;
   if (map) {
     auto w = width(body.getArgument(0).getType(), scope.owner, &op);
     if (failed(w))
       return failure();
+    ordinalWidth = *w;
     arguments.push_back(bits(*w) + "{" + ordinal + "}");
     for (Value input : map.getTables())
       arguments.push_back(ref(scope, input) + "[" + ordinal + "]");
@@ -917,6 +1127,16 @@ LogicalResult Cpp::tableRegion(Operation &op, Expr &scope, unsigned indent) {
     }
   }
 
+  if (map && !pending.empty() &&
+      emitSimpleMap(map, scope, *count, ordinalWidth, ws))
+    return success();
+  if (map && !local(scope)) {
+    materializeInputs({scope.owner, &op}, ws);
+    for (auto [value, needed] : llvm::zip_equal(map.getResults(), used))
+      if (needed && declareMapHere({scope.owner, value}))
+        out << ws << *type(value.getType(), scope.owner, &op) << ' '
+            << ref(scope, value) << "{};\n";
+  }
   llvm::DenseSet<Value> values;
   while (!pending.empty()) {
     Value value = pending.pop_back_val();
@@ -1480,6 +1700,7 @@ LogicalResult Cpp::work(const WorkSegment &segment, StringRef qualifier) {
   for (auto ordinal : operations) {
     const auto &node = plan.nodes[ordinal];
     if (auto call = dyn_cast<ac::SourceMethodCallOp>(node.site.second)) {
+      materializeInputs(node.site, "  ");
       if (failed(registration(call, scope)))
         return failure();
     } else if (failed(emitNode(node, scope, 2))) {
@@ -1740,8 +1961,10 @@ LogicalResult Cpp::emit() {
       << "  if (!initializationError.empty()) { error = initializationError; "
          "return false; }\n"
       << "  Sample sample;\n";
+  inWork = true;
   for (auto [index, net] : llvm::enumerate(plan.slots))
-    if (localSlots.contains(net) && !initializedSlots.contains(net))
+    if (localSlots.contains(net) && !initializedSlots.contains(net) &&
+        !declareMapHere(net))
       out << "  [[maybe_unused]] "
           << *type(net.second.getType(), net.first, plan.module(net.first))
           << " slot_" << index << "{};\n";
